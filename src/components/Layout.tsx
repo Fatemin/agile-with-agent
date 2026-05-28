@@ -3,9 +3,9 @@ import { Header } from "./Header";
 
 export function Layout() {
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[var(--bg-primary)]">
+    <div className="h-screen overflow-hidden bg-surface-primary flex flex-col">
       <Header />
-      <div className="flex-1 overflow-hidden flex flex-col">
+      <div className="flex-1 overflow-hidden flex flex-col min-h-0">
         <Outlet />
       </div>
     </div>

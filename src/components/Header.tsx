@@ -11,10 +11,10 @@ function NavLink({ to, label, active }: { to: string; label: string; active: boo
     <Link
       to={to}
       className={cn(
-        "px-2.5 py-1 rounded-md text-xs transition-colors",
+        "text-xs px-2.5 py-1 rounded-md transition-colors",
         active
-          ? "text-[var(--accent)] bg-[var(--accent-soft)] font-medium"
-          : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+          ? "text-accent bg-accent-soft font-medium"
+          : "text-content-tertiary hover:text-content-secondary hover:bg-surface-tertiary"
       )}
     >
       {label}
@@ -22,48 +22,43 @@ function NavLink({ to, label, active }: { to: string; label: string; active: boo
   );
 }
 
-function ProjectSwitcher({ currentProject }: { currentProject?: Project }) {
+function ProjectSwitcher({ project }: { project: Project }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
-  const { data: projects = [] } = useQuery({
-    queryKey: ["projects"],
-    queryFn: () => api.projects.list(),
-  });
-
-  if (!currentProject) return null;
+  const { data: projects = [] } = useQuery({ queryKey: ["projects"], queryFn: () => api.projects.list() });
 
   return (
     <div className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-content-primary hover:bg-surface-tertiary transition-colors"
       >
-        <span className="size-2 rounded-full" style={{ backgroundColor: currentProject.color }} />
-        {currentProject.name}
-        <ChevronDown size={13} className="text-[var(--text-tertiary)]" />
+        <span className="size-2 rounded-full" style={{ backgroundColor: project.color }} />
+        {project.name}
+        <ChevronDown size={13} className="text-content-tertiary" />
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] py-1 shadow-lg">
+          <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-xl border border-border bg-surface-card py-1 shadow-lg">
             {projects.map((p) => (
               <button
                 key={p.id}
                 onClick={() => { navigate(`/projects/${p.id}`); setOpen(false); }}
                 className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-[var(--bg-secondary)]",
-                  p.id === currentProject.id ? "text-[var(--accent)] font-medium" : "text-[var(--text-primary)]"
+                  "flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors hover:bg-surface-secondary",
+                  p.id === project.id ? "text-accent font-medium" : "text-content-primary"
                 )}
               >
                 <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
-                {p.name}
-                <span className="ml-auto font-mono text-[11px] text-[var(--text-tertiary)]">{p.key}</span>
+                <span className="flex-1 text-left truncate">{p.name}</span>
+                <span className="font-mono text-[10px] text-content-tertiary shrink-0">{p.key}</span>
               </button>
             ))}
-            <div className="my-1 border-t border-[var(--border)]" />
+            <div className="my-1 border-t border-border" />
             <button
               onClick={() => { navigate("/projects"); setOpen(false); }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--text-tertiary)] hover:bg-[var(--bg-secondary)] transition-colors"
+              className="flex w-full items-center gap-2 px-3 py-2 text-sm text-content-tertiary hover:bg-surface-secondary transition-colors"
             >
               <FolderKanban size={13} />
               All projects
@@ -85,22 +80,18 @@ export function Header() {
   });
 
   return (
-    <header className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-secondary)] px-5 py-3 shrink-0">
-      {/* Left */}
+    <header className="flex items-center justify-between px-5 py-3 border-b border-border bg-surface-secondary shrink-0">
       <div className="flex items-center gap-2">
-        <Link to="/" className="text-[15px] font-bold tracking-tight text-[var(--text-primary)]">
-          Agile <span className="text-[var(--accent)]">×</span> Agent
+        <Link to="/" className="text-[15px] font-bold tracking-tight text-content-primary">
+          Agile <span className="text-accent">×</span> Agent
         </Link>
-
         {project && (
           <>
-            <span className="text-[var(--text-tertiary)] text-xs">/</span>
-            <ProjectSwitcher currentProject={project} />
+            <span className="text-content-tertiary text-xs">/</span>
+            <ProjectSwitcher project={project} />
           </>
         )}
       </div>
-
-      {/* Right nav */}
       <nav className="flex items-center gap-1">
         <NavLink to="/" label="Dashboard" active={location.pathname === "/"} />
         <NavLink to="/projects" label="Projects" active={location.pathname === "/projects"} />

@@ -1,20 +1,24 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* ── Light mode (default) ── */
+/* ── Design tokens (light mode only) ── */
 :root {
-  --bg-primary: #FAFAFA;
+  --bg-primary:   #FAFAFA;
   --bg-secondary: #F4F4F5;
-  --bg-tertiary: #E4E4E7;
-  --bg-card: #FFFFFF;
-  --text-primary: #09090B;
+  --bg-tertiary:  #E4E4E7;
+  --bg-card:      #FFFFFF;
+  --text-primary:   #09090B;
   --text-secondary: #52525B;
-  --text-tertiary: #A1A1AA;
-  --accent: #0891B2;
-  --accent-soft: rgba(8, 145, 178, 0.08);
-  --accent-glow: rgba(8, 145, 178, 0.15);
-  --border: #E4E4E7;
-  --shadow: rgba(0, 0, 0, 0.06);
+  --text-tertiary:  #A1A1AA;
+  --accent:       #0891B2;
+  --accent-soft:  rgba(8, 145, 178, 0.08);
+  --accent-glow:  rgba(8, 145, 178, 0.15);
+  --border-color: #E4E4E7;
+  --input-color:  #E4E4E7;
+  --ring-color:   #A1A1AA;
+  --success:      #22C55E;
+  --warning:      #F59E0B;
+  --error:        #EF4444;
 }
 
 html {
@@ -28,46 +32,74 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Tailwind v4 semantic token mapping ── */
 @theme {
   --font-sans: "Geist", system-ui, sans-serif;
   --font-mono: "Geist Mono", monospace;
 
-  --color-bg-primary: var(--bg-primary);
-  --color-bg-secondary: var(--bg-secondary);
-  --color-bg-tertiary: var(--bg-tertiary);
-  --color-bg-card: var(--bg-card);
-  --color-text-primary: var(--text-primary);
-  --color-text-secondary: var(--text-secondary);
-  --color-text-tertiary: var(--text-tertiary);
-  --color-accent: var(--accent);
-  --color-accent-soft: var(--accent-soft);
-  --color-border: var(--border);
-
-  --color-surface-primary: var(--bg-primary);
+  /* Surface tokens → bg-surface-* */
+  --color-surface-primary:   var(--bg-primary);
   --color-surface-secondary: var(--bg-secondary);
-  --color-surface-tertiary: var(--bg-tertiary);
-  --color-surface-card: var(--bg-card);
-  --color-content-primary: var(--text-primary);
+  --color-surface-tertiary:  var(--bg-tertiary);
+  --color-surface-card:      var(--bg-card);
+
+  /* Content tokens → text-content-* */
+  --color-content-primary:   var(--text-primary);
   --color-content-secondary: var(--text-secondary);
-  --color-content-tertiary: var(--text-tertiary);
+  --color-content-tertiary:  var(--text-tertiary);
 
-  --color-success: #22C55E;
-  --color-warning: #F59E0B;
-  --color-error: #EF4444;
+  /* Accent → text-accent, bg-accent, border-accent */
+  --color-accent:      var(--accent);
+  --color-accent-soft: var(--accent-soft);
 
+  /* shadcn compat tokens */
+  --color-background:         var(--bg-primary);
+  --color-foreground:         var(--text-primary);
+  --color-card:               var(--bg-card);
+  --color-card-foreground:    var(--text-primary);
+  --color-muted:              var(--bg-tertiary);
+  --color-muted-foreground:   var(--text-secondary);
+  --color-border:             var(--border-color);
+  --color-input:              var(--input-color);
+  --color-ring:               var(--ring-color);
+  --color-primary:            var(--text-primary);
+  --color-primary-foreground: var(--bg-primary);
+  --color-secondary:          var(--bg-tertiary);
+  --color-secondary-foreground: var(--text-primary);
+  --color-destructive:        var(--error);
+
+  /* Semantic */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error:   var(--error);
+
+  --radius: 0.5rem;
+
+  /* Animations */
   --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
   --animate-card-highlight: card-highlight 1s ease-out forwards;
 
   @keyframes pulse-dot {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+    50%       { opacity: 0.3; }
   }
   @keyframes card-highlight {
-    0% { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-    100% { border-color: var(--border); box-shadow: none; }
+    0%   { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    100% { border-color: var(--border-color); box-shadow: none; }
   }
 }
 
+/* ── Global base ── */
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ── Kanban column scrollbar — thin, auto-hide ── */
 .scrollbar-column {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -75,7 +107,7 @@ body {
 .scrollbar-column:hover {
   scrollbar-color: var(--bg-tertiary) transparent;
 }
-.scrollbar-column::-webkit-scrollbar { width: 4px; }
+.scrollbar-column::-webkit-scrollbar       { width: 4px; }
 .scrollbar-column::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-column::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
 .scrollbar-column:hover::-webkit-scrollbar-thumb { background: var(--bg-tertiary); }

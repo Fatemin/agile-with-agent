@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* ── Light mode (default) ── */
 :root {
   --bg-primary: #FAFAFA;
   --bg-secondary: #F4F4F5;
@@ -10,23 +11,10 @@
   --text-secondary: #52525B;
   --text-tertiary: #A1A1AA;
   --accent: #0891B2;
-  --accent-soft: rgba(8, 145, 178, 0.1);
-  --accent-glow: rgba(34, 211, 238, 0.15);
+  --accent-soft: rgba(8, 145, 178, 0.08);
+  --accent-glow: rgba(8, 145, 178, 0.15);
   --border: #E4E4E7;
-}
-
-.dark {
-  --bg-primary: #09090B;
-  --bg-secondary: #18181B;
-  --bg-tertiary: #27272A;
-  --bg-card: #18181B;
-  --text-primary: #FAFAFA;
-  --text-secondary: #A1A1AA;
-  --text-tertiary: #71717A;
-  --accent: #22D3EE;
-  --accent-soft: rgba(34, 211, 238, 0.1);
-  --accent-glow: rgba(34, 211, 238, 0.12);
-  --border: #27272A;
+  --shadow: rgba(0, 0, 0, 0.06);
 }
 
 html {
@@ -55,23 +43,39 @@ body {
   --color-accent-soft: var(--accent-soft);
   --color-border: var(--border);
 
+  --color-surface-primary: var(--bg-primary);
+  --color-surface-secondary: var(--bg-secondary);
+  --color-surface-tertiary: var(--bg-tertiary);
+  --color-surface-card: var(--bg-card);
+  --color-content-primary: var(--text-primary);
+  --color-content-secondary: var(--text-secondary);
+  --color-content-tertiary: var(--text-tertiary);
+
   --color-success: #22C55E;
-  --color-warning: #EAB308;
+  --color-warning: #F59E0B;
   --color-error: #EF4444;
 
   --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+  --animate-card-highlight: card-highlight 1s ease-out forwards;
 
   @keyframes pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
   }
+  @keyframes card-highlight {
+    0% { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    100% { border-color: var(--border); box-shadow: none; }
+  }
 }
 
-.scrollbar-thin {
+.scrollbar-column {
   scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.scrollbar-column:hover {
   scrollbar-color: var(--bg-tertiary) transparent;
 }
-
-.scrollbar-thin::-webkit-scrollbar { width: 4px; }
-.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-.scrollbar-thin::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 2px; }
+.scrollbar-column::-webkit-scrollbar { width: 4px; }
+.scrollbar-column::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-column::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+.scrollbar-column:hover::-webkit-scrollbar-thumb { background: var(--bg-tertiary); }

@@ -50,9 +50,9 @@ function AgentDialog({ open, onClose, agent }: { open: boolean; onClose: () => v
   });
   const mutation = useMutation({
     mutationFn: () => agent
-      ? api.agents.update(agent.id, { ...form, model: form.model || undefined })
-      : api.agents.create({ ...form, model: form.model || undefined }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["agents"] }); toast.success(agent ? "Agent updated" : "Agent created"); onClose(); },
+      ? api.agents.update(agent.id, { ...form, model: form.model || null })
+      : api.agents.create({ ...form, model: form.model || null }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["agents"] }); toast.success(agent ? "Agent updated" : "Agent created"); onClose(); setForm({ name: agent?.name ?? "", provider: (agent?.provider as Provider) ?? "claude", model: agent?.model ?? "", system_prompt: agent?.system_prompt ?? DEFAULT_SYSTEM_PROMPT, prompt_template: agent?.prompt_template ?? DEFAULT_PROMPT_TEMPLATE }); },
     onError: () => toast.error("Failed to save agent"),
   });
 

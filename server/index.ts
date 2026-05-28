@@ -5,6 +5,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import "./db.js";
 import { agentsRouter } from "./routes/agents.js";
+import { contextsRouter } from "./routes/contexts.js";
 import { epicsRouter } from "./routes/epics.js";
 import { projectsRouter } from "./routes/projects.js";
 import { sprintsRouter } from "./routes/sprints.js";
@@ -16,6 +17,7 @@ app.use(logger());
 app.use(cors());
 
 app.route("/api/projects", projectsRouter);
+app.route("/api/contexts", contextsRouter);
 app.route("/api/epics", epicsRouter);
 app.route("/api/sprints", sprintsRouter);
 app.route("/api/stories", storiesRouter);

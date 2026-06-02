@@ -2,7 +2,8 @@ import { db } from "./db.js";
 import { log } from "./logger.js";
 import { buildBranchName, createBranch, createBranchFrom } from "./git.js";
 import { nanoid } from "nanoid";
-import { buildTaskPromptBlocks, type PriorTaskContext } from "./contextBuilder.js";
+import { buildTaskPromptBlocks, buildWorkflowPolicyBlock, type PriorTaskContext } from "./contextBuilder.js";
+import { TemplateRenderError } from "./workflow.js";
 import { runClaudeCode, recordAgentRun, type RunResult } from "./claudeRunner.js";
 import { getAgentRuntimeConfig } from "./runtimeConfig.js";
 import { ensureWorkspace } from "./workspace.js";
@@ -11,6 +12,12 @@ import { runHook } from "./hooks.js";
 
 export interface RunOptions {
   signal?: AbortSignal;
+  /**
+   * Run attempt number for prompt rendering (Symphony §12.3): null/absent on the
+   * first run, integer on a retry or continuation. Passed to the WORKFLOW.md
+   * template as `attempt` so policies can vary instructions across attempts.
+   */
+  attempt?: number | null;
 }
 
 /**
@@ -98,6 +105,10 @@ export interface ExecutionEvent {
   input?: unknown;
   sections?: string[];
   tokens?: number;
+  /** Token usage for a completed agent run, surfaced so the orchestrator can
+   *  accumulate live per-session totals for the Ops snapshot (Symphony §13.5). */
+  tokensIn?: number;
+  tokensOut?: number;
 }
 
 type StoryRow = {
@@ -510,7 +521,20 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
     priorTasks,
   });
 
-  const userPrompt = [blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
+  // Repo-owned WORKFLOW.md policy (§5.4, §12) — strict render; a failure fails
+  // this attempt (§12.4) just like any other run error.
+  let workflowBlock: string | null;
+  try {
+    workflowBlock = buildWorkflowPolicyBlock(storyId, opts?.attempt ?? null);
+  } catch (e) {
+    const msg = e instanceof TemplateRenderError ? e.message : (e instanceof Error ? e.message : String(e));
+    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
+    log(storyId, "execution_error", `Task #${task.seq}: WORKFLOW.md prompt render failed — ${msg}`, "system", "error");
+    yield { type: "error", content: `Workflow prompt render failed: ${msg}` };
+    return;
+  }
+
+  const userPrompt = [workflowBlock, blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
 
   db.prepare("UPDATE story_tasks SET status = 'in_progress', phase = 'implementing', updated_at = datetime('now') WHERE id = ?").run(taskId);
   log(storyId, "task_start",
@@ -555,6 +579,8 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
     runType: "execute", promptText: userPrompt, result,
   });
 
+  // Token fields ride on the terminal event so the orchestrator can accumulate
+  // live per-session totals for the Ops snapshot (Symphony §13.5).
   if (result.ok) {
     const summary = (result.result || "(no summary returned)").slice(0, 8000);
     db.prepare("UPDATE story_tasks SET status = 'done', phase = 'done', impl_summary = ?, updated_at = datetime('now') WHERE id = ?")
@@ -563,7 +589,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
       `✓ Task #${task.seq} complete · ${result.tokensIn}+${result.tokensOut} tok · ${result.turns}t · ${(result.durationMs/1000).toFixed(1)}s${result.costUsd ? ` · $${result.costUsd.toFixed(4)}` : ""}`,
       "agent"
     );
-    yield { type: "progress", content: `Completed ${task.title}` };
+    yield { type: "progress", content: `Completed ${task.title}`, tokensIn: result.tokensIn, tokensOut: result.tokensOut };
   } else {
     db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', impl_summary = ?, updated_at = datetime('now') WHERE id = ?")
       .run((result.error ?? result.result ?? "").slice(0, 8000), taskId);
@@ -571,7 +597,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
       `Task #${task.seq} failed: ${result.error ?? "agent reported error"}`,
       "system", "error"
     );
-    yield { type: "error", content: result.error ?? "Agent execution failed" };
+    yield { type: "error", content: result.error ?? "Agent execution failed", tokensIn: result.tokensIn, tokensOut: result.tokensOut };
   }
 }
 
@@ -659,7 +685,18 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
     priorTasks,
   });
 
-  const userPrompt = [blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
+  // Repo-owned WORKFLOW.md policy (§5.4, §12) — strict render; a failure fails this attempt (§12.4).
+  let workflowBlock: string | null;
+  try {
+    workflowBlock = buildWorkflowPolicyBlock(storyId, opts?.attempt ?? null);
+  } catch (e) {
+    const msg = e instanceof TemplateRenderError ? e.message : (e instanceof Error ? e.message : String(e));
+    log(storyId, "execution_error", `QA: WORKFLOW.md prompt render failed — ${msg}`, "system", "error");
+    yield { type: "error", content: `Workflow prompt render failed: ${msg}` };
+    return;
+  }
+
+  const userPrompt = [workflowBlock, blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
 
   log(storyId, "task_start",
     `▶ QA agent → spawning **${agent.name}** · ${config.model} · cwd: ${projectPath}`,
@@ -700,12 +737,16 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
     runType: "qa", promptText: userPrompt, result,
   });
 
+  // Token fields ride on the terminal events so the orchestrator can accumulate
+  // live per-session totals for the Ops snapshot (Symphony §13.5).
+  const tok = { tokensIn: result.tokensIn, tokensOut: result.tokensOut };
+
   if (!result.ok) {
     log(storyId, "execution_error",
       `QA run failed: ${result.error ?? "unknown error"}`,
       "system", "error"
     );
-    yield { type: "error", content: result.error ?? "QA execution failed" };
+    yield { type: "error", content: result.error ?? "QA execution failed", ...tok };
     return;
   }
 
@@ -724,18 +765,18 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
     db.prepare("UPDATE stories SET qa_result = 'fail', qa_notes = ?, updated_at = datetime('now') WHERE id = ?")
       .run(reason, storyId);
     log(storyId, "qa", `✗ QA failed: ${reason}`, "agent", "warn");
-    yield { type: "progress", content: `QA failed: ${reason}` };
+    yield { type: "progress", content: `QA failed: ${reason}`, ...tok };
   } else if (passMatch) {
     db.prepare("UPDATE stories SET qa_result = 'pass', status = 'human_review', updated_at = datetime('now') WHERE id = ?").run(storyId);
     log(storyId, "qa", `✓ QA passed`, "agent");
     log(storyId, "status_change", "Status changed to **Human Review** — awaiting human ack to mark Done", "system");
-    yield { type: "progress", content: "QA passed — awaiting human review" };
+    yield { type: "progress", content: "QA passed — awaiting human review", ...tok };
   } else {
     // Agent didn't emit the marker — record but don't auto-advance status
     db.prepare("UPDATE stories SET qa_notes = ?, updated_at = datetime('now') WHERE id = ?")
       .run("Agent did not return QA_RESULT marker — review output manually", storyId);
     log(storyId, "qa", "QA inconclusive — agent did not emit QA_RESULT marker; review output", "agent", "warn");
-    yield { type: "progress", content: "QA inconclusive — review output" };
+    yield { type: "progress", content: "QA inconclusive — review output", ...tok };
   }
 }
 

@@ -1,4 +1,5 @@
 import { db } from "./db.js";
+import { loadWorkflow, renderTemplate, TemplateRenderError } from "./workflow.js";
 
 type StoryType = "story" | "bug" | "task" | "spike";
 type AgentRole = "frontend" | "backend" | "fullstack" | "qa" | "devops" | "techlead" | "security" | "custom";
@@ -80,108 +81,6 @@ export function selectContextSections(params: {
   }
 
   return Array.from(selected);
-}
-
-// ─── Build full execution prompt ──────────────────────────────────────────────
-
-export function buildExecutionPrompt(params: {
-  storyId: string;
-  agentSystemPrompt: string;
-  agentRole: AgentRole | null;
-}): { prompt: string; includedSections: string[]; estimatedTokens: number } {
-  const story = db.prepare(`
-    SELECT s.*, p.local_path, p.name AS project_name
-    FROM stories s
-    JOIN projects p ON s.project_id = p.id
-    WHERE s.id = ?
-  `).get(params.storyId) as {
-    key: string; title: string; type: StoryType;
-    as_a: string | null; i_want: string | null; so_that: string | null;
-    description: string | null; acceptance_criteria: string | null;
-    branch_name: string | null; project_id: string;
-    local_path: string | null; project_name: string;
-  } | undefined;
-
-  if (!story) throw new Error(`Story ${params.storyId} not found`);
-
-  const titleDesc = `${story.title} ${story.description ?? ""}`;
-
-  const sectionKeys = selectContextSections({
-    storyType: story.type,
-    agentRole: params.agentRole,
-    titleAndDescription: titleDesc,
-  });
-
-  // Fetch only populated sections in the selected set
-  const contexts = sectionKeys.length > 0
-    ? db.prepare(`
-        SELECT section, title, content
-        FROM project_contexts
-        WHERE project_id = ? AND section IN (${sectionKeys.map(() => "?").join(",")})
-        ORDER BY sort_order ASC
-      `).all(story.project_id, ...sectionKeys) as Array<{ section: string; title: string; content: string | null }>
-    : [];
-
-  const populated = contexts.filter((c) => c.content?.trim());
-  const includedSections = populated.map((c) => c.section);
-
-  // ── Assemble prompt ──────────────────────────────────────────────────────────
-  const parts: string[] = [];
-
-  // System role (to be marked cache_control: ephemeral by the caller)
-  parts.push(params.agentSystemPrompt.trim());
-
-  // Project context (to be marked cache_control: ephemeral by the caller)
-  if (populated.length > 0) {
-    parts.push("## Project Context\n");
-    for (const ctx of populated) {
-      parts.push(`### ${ctx.title}\n\n${ctx.content!.trim()}`);
-    }
-  }
-
-  // Story — not cached (changes every call)
-  parts.push("## Your Task\n");
-  parts.push(`**${story.key}** — ${story.title}`);
-
-  if (story.as_a || story.i_want || story.so_that) {
-    parts.push([
-      story.as_a    ? `**As a** ${story.as_a}` : null,
-      story.i_want  ? `**I want** ${story.i_want}` : null,
-      story.so_that ? `**So that** ${story.so_that}` : null,
-    ].filter(Boolean).join("\n"));
-  }
-
-  if (story.description?.trim()) {
-    parts.push(`### Description\n\n${story.description.trim()}`);
-  }
-
-  if (story.acceptance_criteria?.trim()) {
-    parts.push(`### Acceptance Criteria\n\n${story.acceptance_criteria.trim()}`);
-  }
-
-  const workDir = story.local_path ?? ".";
-  const branch  = story.branch_name ?? "(current branch)";
-
-  parts.push(`## Instructions
-
-You are working in \`${workDir}\` on branch \`${branch}\`.
-
-**Phase 1 — Design:** Explore the relevant files. Understand existing patterns. Note your implementation approach briefly.
-
-**Phase 2 — Development:** Implement the acceptance criteria. Follow project conventions exactly. Do not introduce abstractions beyond what the story requires.
-
-**Phase 3 — Testing:** Write unit tests that verify the acceptance criteria. Run them and confirm they pass.
-
-**Phase 4 — Commit:** \`git add -A && git commit -m "${story.key}: <concise summary>"\`
-
-Report: what you built, which files you changed, and test results.`);
-
-  const prompt = parts.join("\n\n");
-
-  // Rough token estimate (1 token ≈ 4 chars)
-  const estimatedTokens = Math.ceil(prompt.length / 4);
-
-  return { prompt, includedSections, estimatedTokens };
 }
 
 // ─── Task prompt blocks (multi-agent pipeline) ───────────────────────────────
@@ -303,89 +202,90 @@ export function buildTaskPromptBlocks(params: {
   };
 }
 
-// ─── Prompt structure for caching ─────────────────────────────────────────────
-// For Anthropic SDK callers, the prompt can be split into cache-friendly blocks:
+// ─── Workflow policy block (Symphony §5.4, §12) ──────────────────────────────
 //
-//   messages[0].content = [
-//     { type: "text", text: systemPrompt,      cache_control: { type: "ephemeral" } },
-//     { type: "text", text: projectContextPart, cache_control: { type: "ephemeral" } },
-//     { type: "text", text: storyPart }         // no cache — changes every call
-//   ]
+// The Markdown body of a project's `WORKFLOW.md` is the repo-owned per-issue
+// prompt template. When present, render it with the normalized `issue` object
+// and `attempt` metadata (§12.1) and surface it as a leading policy block in
+// every agent invocation for that story.
 //
-// The caller should use buildPromptBlocks() below for structured access.
+// Rendering is strict: unknown variables/filters throw (§5.4). A render failure
+// must fail the affected run attempt (§5.5, §12.4) — the caller propagates the
+// thrown TemplateRenderError as an execution error.
 
-export function buildPromptBlocks(params: {
-  storyId: string;
-  agentSystemPrompt: string;
-  agentRole: AgentRole | null;
-}): {
-  systemBlock: string;
-  contextBlock: string | null;
-  storyBlock: string;
-  includedSections: string[];
-  estimatedTokens: number;
-} {
+/** Normalized issue object exposed to the workflow template (§11.3, §12.2). */
+function buildIssueVars(story: {
+  id: string; key: string; title: string; type: string;
+  status: string; priority: string | null; description: string | null;
+  as_a: string | null; i_want: string | null; so_that: string | null;
+  acceptance_criteria: string | null; branch_name: string | null;
+  pr_url: string | null; epic_name: string | null;
+}): Record<string, unknown> {
+  // Labels: lowercase, de-duplicated (§11.3). Derived from type/priority/epic.
+  const labels = [story.type, story.priority ?? "", story.epic_name ?? ""]
+    .map((l) => l.trim().toLowerCase())
+    .filter(Boolean);
+  return {
+    id: story.id,
+    identifier: story.key,
+    title: story.title,
+    type: story.type,
+    state: story.status,
+    priority: story.priority ?? "",
+    description: story.description ?? "",
+    as_a: story.as_a ?? "",
+    i_want: story.i_want ?? "",
+    so_that: story.so_that ?? "",
+    acceptance_criteria: story.acceptance_criteria ?? "",
+    branch: story.branch_name ?? "",
+    url: story.pr_url ?? "",
+    epic: story.epic_name ?? "",
+    labels,
+    // Story-level blockers are not modeled in this tracker; expose an empty
+    // array so templates can iterate without a strict-variable failure.
+    blockers: [] as string[],
+  };
+}
+
+/**
+ * Build the rendered WORKFLOW.md policy block for a story, or `null` when the
+ * project has no WORKFLOW.md prompt body (the common case — fully backward
+ * compatible). Throws {@link TemplateRenderError} on a strict render failure so
+ * the caller can fail the run attempt.
+ *
+ * @param attempt  null/absent on the first run, integer on retry/continuation (§12.3).
+ */
+export function buildWorkflowPolicyBlock(storyId: string, attempt: number | null): string | null {
   const story = db.prepare(`
-    SELECT s.*, p.local_path, p.name AS project_name
+    SELECT s.id, s.key, s.title, s.type, s.status, s.priority, s.description,
+           s.as_a, s.i_want, s.so_that, s.acceptance_criteria, s.branch_name, s.pr_url,
+           p.local_path, e.title AS epic_name
     FROM stories s
     JOIN projects p ON s.project_id = p.id
+    LEFT JOIN epics e ON s.epic_id = e.id
     WHERE s.id = ?
-  `).get(params.storyId) as {
-    key: string; title: string; type: StoryType;
+  `).get(storyId) as {
+    id: string; key: string; title: string; type: string;
+    status: string; priority: string | null; description: string | null;
     as_a: string | null; i_want: string | null; so_that: string | null;
-    description: string | null; acceptance_criteria: string | null;
-    branch_name: string | null; project_id: string;
-    local_path: string | null;
+    acceptance_criteria: string | null; branch_name: string | null; pr_url: string | null;
+    local_path: string | null; epic_name: string | null;
   } | undefined;
 
-  if (!story) throw new Error(`Story ${params.storyId} not found`);
+  if (!story || !story.local_path) return null;
 
-  const titleDesc = `${story.title} ${story.description ?? ""}`;
-  const sectionKeys = selectContextSections({
-    storyType: story.type,
-    agentRole: params.agentRole,
-    titleAndDescription: titleDesc,
-  });
-
-  const contexts = sectionKeys.length > 0
-    ? db.prepare(`
-        SELECT section, title, content FROM project_contexts
-        WHERE project_id = ? AND section IN (${sectionKeys.map(() => "?").join(",")})
-        ORDER BY sort_order ASC
-      `).all(story.project_id, ...sectionKeys) as Array<{ section: string; title: string; content: string | null }>
-    : [];
-
-  const populated = contexts.filter((c) => c.content?.trim());
-  const includedSections = populated.map((c) => c.section);
-
-  const contextBlock = populated.length > 0
-    ? "## Project Context\n\n" + populated.map((c) => `### ${c.title}\n\n${c.content!.trim()}`).join("\n\n")
-    : null;
-
-  const storyParts: string[] = ["## Your Task\n"];
-  storyParts.push(`**${story.key}** — ${story.title}`);
-  if (story.as_a || story.i_want || story.so_that) {
-    storyParts.push([
-      story.as_a    ? `**As a** ${story.as_a}` : null,
-      story.i_want  ? `**I want** ${story.i_want}` : null,
-      story.so_that ? `**So that** ${story.so_that}` : null,
-    ].filter(Boolean).join("\n"));
+  // Workflow file read/parse errors are configuration errors — do not silently
+  // fall back to a prompt (§5.4). Missing file is fine (most projects have none).
+  const { definition, error } = loadWorkflow(story.local_path);
+  if (error) {
+    if (error.code === "missing_workflow_file") return null;
+    throw new TemplateRenderError(`WORKFLOW.md ${error.code}: ${error.message}`);
   }
-  if (story.description?.trim()) storyParts.push(`### Description\n\n${story.description.trim()}`);
-  if (story.acceptance_criteria?.trim()) storyParts.push(`### Acceptance Criteria\n\n${story.acceptance_criteria.trim()}`);
+  if (!definition || !definition.has_prompt_body) return null;
 
-  const branch  = story.branch_name ?? "(current branch)";
-  const workDir = story.local_path ?? ".";
-  storyParts.push(`## Instructions\n\nWorking in \`${workDir}\` on branch \`${branch}\`.\n\n**Phase 1 — Design** → **Phase 2 — Development** → **Phase 3 — Testing** → **Phase 4 — Commit** (\`git commit -m "${story.key}: <summary>"\`)`);
+  const issue = buildIssueVars(story);
+  const rendered = renderTemplate(definition.prompt_template, { issue, attempt }).trim();
+  if (!rendered) return null;
 
-  const storyBlock = storyParts.join("\n\n");
-  const total = params.agentSystemPrompt.length + (contextBlock?.length ?? 0) + storyBlock.length;
-
-  return {
-    systemBlock: params.agentSystemPrompt.trim(),
-    contextBlock,
-    storyBlock,
-    includedSections,
-    estimatedTokens: Math.ceil(total / 4),
-  };
+  return `## Workflow Policy\n\nThe following instructions come from this project's \`WORKFLOW.md\` and take precedence:\n\n${rendered}`;
 }

@@ -249,9 +249,13 @@ class Orchestrator {
       let hadError = false;
       let errorMsg: string | null = null;
       try {
-        for await (const event of executeStory(storyId, { signal: abort.signal })) {
+        // §12.3: attempt is null on the first run, integer on retry/continuation.
+        const runAttempt = attempt > 1 ? attempt : null;
+        for await (const event of executeStory(storyId, { signal: abort.signal, attempt: runAttempt })) {
           entry.lastEventAt = Date.now();
           if (event.type === "tool_call") entry.turnCount += 1;
+          if (typeof event.tokensIn === "number") entry.tokenIn += event.tokensIn;
+          if (typeof event.tokensOut === "number") entry.tokenOut += event.tokensOut;
           if (event.type === "error") { hadError = true; errorMsg = event.content ?? "unknown error"; }
           if (event.type === "done" || event.type === "error") break;
           if (abort.signal.aborted) { hadError = true; errorMsg = "aborted"; break; }

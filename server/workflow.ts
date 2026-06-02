@@ -48,6 +48,8 @@ export interface WorkflowConfig {
 export interface WorkflowDefinition {
   config: WorkflowConfig;
   prompt_template: string;
+  /** True when the WORKFLOW.md body supplied a real prompt (not the built-in fallback). */
+  has_prompt_body: boolean;
 }
 
 export type WorkflowError =
@@ -71,7 +73,8 @@ const FALLBACK_PROMPT = "You are working on an issue. Read it carefully and comp
 export function parseWorkflowFile(raw: string): WorkflowDefinition | WorkflowError {
   // No front matter → entire file is prompt body
   if (!raw.startsWith("---")) {
-    return { config: {}, prompt_template: raw.trim() || FALLBACK_PROMPT };
+    const trimmed = raw.trim();
+    return { config: {}, prompt_template: trimmed || FALLBACK_PROMPT, has_prompt_body: trimmed.length > 0 };
   }
 
   // Find the closing `---` line
@@ -93,7 +96,7 @@ export function parseWorkflowFile(raw: string): WorkflowDefinition | WorkflowErr
     return { code: "workflow_parse_error", message: `YAML parse error: ${e instanceof Error ? e.message : String(e)}` };
   }
 
-  if (parsed == null) return { config: {}, prompt_template: body || FALLBACK_PROMPT };
+  if (parsed == null) return { config: {}, prompt_template: body || FALLBACK_PROMPT, has_prompt_body: body.length > 0 };
   if (typeof parsed !== "object" || Array.isArray(parsed)) {
     return { code: "workflow_front_matter_not_a_map", message: "Front matter must be a YAML object" };
   }
@@ -101,7 +104,7 @@ export function parseWorkflowFile(raw: string): WorkflowDefinition | WorkflowErr
   // Resolve $VAR_NAME indirections in string values (top-level + one nested layer).
   const resolved = resolveEnvVars(parsed as Record<string, unknown>);
 
-  return { config: resolved as WorkflowConfig, prompt_template: body || FALLBACK_PROMPT };
+  return { config: resolved as WorkflowConfig, prompt_template: body || FALLBACK_PROMPT, has_prompt_body: body.length > 0 };
 }
 
 function resolveEnvVars(obj: Record<string, unknown>): Record<string, unknown> {

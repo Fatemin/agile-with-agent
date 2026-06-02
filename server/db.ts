@@ -98,6 +98,100 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+// Seed default execution context rules if not present
+const hasRules = db.prepare("SELECT 1 FROM settings WHERE key = 'execution_context_rules'").get();
+if (!hasRules) {
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+    "execution_context_rules",
+    JSON.stringify({
+      story: ["overview", "prd", "design_system", "conventions"],
+      bug:   ["overview", "data_model", "conventions"],
+      task:  ["overview", "architecture", "conventions"],
+      spike: ["overview", "architecture", "data_model", "conventions"],
+    })
+  );
+}
+
+const hasRoleRules = db.prepare("SELECT 1 FROM settings WHERE key = 'agent_role_context_rules'").get();
+if (!hasRoleRules) {
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+    "agent_role_context_rules",
+    JSON.stringify({
+      frontend:  ["overview", "design_system", "conventions"],
+      backend:   ["overview", "architecture", "data_model", "conventions"],
+      fullstack: ["overview", "architecture", "data_model", "design_system", "conventions"],
+      qa:        ["overview", "prd", "conventions"],
+      devops:    ["overview", "architecture", "conventions"],
+      techlead:  ["overview", "prd", "architecture", "data_model", "conventions"],
+      security:  ["overview", "architecture", "data_model", "conventions"],
+      custom:    ["overview", "conventions"],
+    })
+  );
+}
+
+const hasKeywordRules = db.prepare("SELECT 1 FROM settings WHERE key = 'keyword_context_rules'").get();
+if (!hasKeywordRules) {
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+    "keyword_context_rules",
+    JSON.stringify([
+      { keywords: ["api", "endpoint", "rest", "graphql", "route"],     sections: ["architecture"] },
+      { keywords: ["database", "schema", "migration", "model", "sql"], sections: ["data_model"] },
+      { keywords: ["ui", "component", "style", "css", "layout", "design", "color", "theme"], sections: ["design_system"] },
+      { keywords: ["auth", "login", "permission", "role", "token", "jwt"], sections: ["architecture", "data_model"] },
+      { keywords: ["test", "spec", "unit", "e2e", "qa"],               sections: ["conventions"] },
+      { keywords: ["deploy", "ci", "cd", "pipeline", "docker"],        sections: ["architecture"] },
+    ])
+  );
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS story_tasks (
+    id           TEXT PRIMARY KEY,
+    story_id     TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,
+    title        TEXT NOT NULL,
+    description  TEXT,
+    role         TEXT NOT NULL,
+    agent_id     TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    scope_paths  TEXT NOT NULL DEFAULT '[]',
+    depends_on   TEXT NOT NULL DEFAULT '[]',
+    phase        TEXT NOT NULL DEFAULT 'pending',
+    design_output TEXT,
+    impl_summary  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS story_activities (
+    id TEXT PRIMARY KEY,
+    story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    type TEXT NOT NULL DEFAULT 'comment',
+    content TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT 'human',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Orchestrator / system-level events (no story FK)
+  CREATE TABLE IF NOT EXISTS system_events (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT 'info',
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_system_events_created ON system_events(created_at DESC);
+`);
+
 // Migrations for existing databases (idempotent ALTER TABLE)
 const migrations = [
   "ALTER TABLE projects ADD COLUMN local_path TEXT",
@@ -111,8 +205,100 @@ const migrations = [
   "ALTER TABLE stories ADD COLUMN i_want TEXT",
   "ALTER TABLE stories ADD COLUMN so_that TEXT",
   "ALTER TABLE stories ADD COLUMN definition_of_done TEXT",
+  // Agent role
+  "ALTER TABLE agents ADD COLUMN role TEXT",
+  // Dev/QA/Rollout fields
+  "ALTER TABLE stories ADD COLUMN branch_name TEXT",
+  "ALTER TABLE stories ADD COLUMN pr_url TEXT",
+  "ALTER TABLE stories ADD COLUMN pr_number INTEGER",
+  "ALTER TABLE stories ADD COLUMN qa_test_cases TEXT",
+  "ALTER TABLE stories ADD COLUMN qa_notes TEXT",
+  "ALTER TABLE stories ADD COLUMN qa_signed_off_by TEXT",
+  "ALTER TABLE stories ADD COLUMN qa_signed_off_at TEXT",
+  "ALTER TABLE stories ADD COLUMN staging_url TEXT",
+  "ALTER TABLE stories ADD COLUMN deploy_env TEXT",
+  "ALTER TABLE stories ADD COLUMN deploy_url TEXT",
+  "ALTER TABLE stories ADD COLUMN commit_hash TEXT",
+  "ALTER TABLE stories ADD COLUMN deployed_at TEXT",
+  "ALTER TABLE stories ADD COLUMN qa_result TEXT",
+  "ALTER TABLE stories ADD COLUMN parent_story_id TEXT",
+  "ALTER TABLE stories ADD COLUMN pipeline_mode INTEGER NOT NULL DEFAULT 0",
+  // Workflow mode
+  "ALTER TABLE stories ADD COLUMN mode TEXT NOT NULL DEFAULT 'manual'",
+  // Sprint branch tracking
+  "ALTER TABLE sprints ADD COLUMN branch_name TEXT",
+  // Activity log level
+  "ALTER TABLE story_activities ADD COLUMN level TEXT NOT NULL DEFAULT 'info'",
+  // Task redesign — Jira-style fields
+  "ALTER TABLE story_tasks ADD COLUMN type TEXT NOT NULL DEFAULT 'subtask'",
+  "ALTER TABLE story_tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'todo'",
+  "ALTER TABLE story_tasks ADD COLUMN acceptance_criteria TEXT",
+  "ALTER TABLE story_tasks ADD COLUMN estimate_hours REAL",
+  "ALTER TABLE story_tasks ADD COLUMN logged_hours REAL",
+  "ALTER TABLE story_tasks ADD COLUMN severity TEXT",
+  "ALTER TABLE story_tasks ADD COLUMN steps_to_repro TEXT",
+  "ALTER TABLE story_tasks ADD COLUMN expected TEXT",
+  "ALTER TABLE story_tasks ADD COLUMN actual TEXT",
+  "ALTER TABLE story_tasks ADD COLUMN found_during TEXT",
+  "ALTER TABLE story_tasks ADD COLUMN linked_task_id TEXT",
 ];
 
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_runs (
+    id           TEXT PRIMARY KEY,
+    story_id     TEXT REFERENCES stories(id) ON DELETE CASCADE,
+    task_id      TEXT REFERENCES story_tasks(id) ON DELETE SET NULL,
+    agent_id     TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    run_type     TEXT NOT NULL DEFAULT 'execute',
+    model        TEXT,
+    provider     TEXT NOT NULL DEFAULT 'claude',
+    tokens_in    INTEGER NOT NULL DEFAULT 0,
+    tokens_out   INTEGER NOT NULL DEFAULT 0,
+    turns        INTEGER NOT NULL DEFAULT 1,
+    prompt_text  TEXT,
+    output_text  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_runs_story  ON agent_runs(story_id);
+  CREATE INDEX IF NOT EXISTS idx_agent_runs_agent  ON agent_runs(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_agent_runs_task   ON agent_runs(task_id);
+`);
+
+// Rename legacy statuses to new workflow statuses (older "in_progress"/"done" → sprint-style)
+try {
+  db.exec(`UPDATE stories SET status = 'in_dev' WHERE status = 'in_progress'`);
+  db.exec(`UPDATE stories SET status = 'released' WHERE status = 'done'`);
+} catch { /* ignore */ }
+
+// Linear-style flow migration:
+//   sprint statuses → flow statuses
+//   in_dev    → in_progress  (agent is working)
+//   in_qa     → human_review (agent done, awaiting human)
+//   ready     → human_review (release candidate, still needs human ack)
+//   released  → done
+//   (backlog / todo / cancelled stay as-is)
+try {
+  db.exec(`UPDATE stories SET status = 'in_progress'  WHERE status = 'in_dev'`);
+  db.exec(`UPDATE stories SET status = 'human_review' WHERE status IN ('in_qa', 'ready')`);
+  db.exec(`UPDATE stories SET status = 'done'         WHERE status = 'released'`);
+} catch { /* ignore */ }
+
+// Backfill story_tasks.status from legacy phase column
+try {
+  db.exec(`
+    UPDATE story_tasks SET status = CASE
+      WHEN phase = 'pending'      THEN 'todo'
+      WHEN phase = 'designing'    THEN 'in_progress'
+      WHEN phase = 'design_done'  THEN 'in_progress'
+      WHEN phase = 'implementing' THEN 'in_progress'
+      WHEN phase = 'done'         THEN 'done'
+      WHEN phase = 'failed'       THEN 'failed'
+      ELSE 'todo'
+    END
+    WHERE status = 'todo' AND phase IS NOT NULL
+  `);
+} catch { /* ignore */ }

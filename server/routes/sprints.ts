@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
 import { db } from "../db.js";
+import { buildSprintBranchName, createBranch } from "../git.js";
 
 export const sprintsRouter = new Hono();
 
@@ -32,12 +33,27 @@ sprintsRouter.patch("/:id", async (c) => {
 
   if (body.status === "active") {
     // Only one sprint active per project at a time
-    const sprint = db.prepare("SELECT project_id FROM sprints WHERE id = ?").get(id) as { project_id: string } | undefined;
+    const sprint = db.prepare(`
+      SELECT s.project_id, s.name, s.branch_name, p.local_path
+      FROM sprints s LEFT JOIN projects p ON s.project_id = p.id
+      WHERE s.id = ?
+    `).get(id) as { project_id: string; name: string; branch_name: string | null; local_path: string | null } | undefined;
+
     if (sprint) {
       db.prepare("UPDATE sprints SET status = 'completed' WHERE project_id = ? AND status = 'active'").run(sprint.project_id);
+
+      // Create sprint branch if project has a local path and no branch yet
+      if (sprint.local_path && !sprint.branch_name) {
+        const branchName = buildSprintBranchName(sprint.name);
+        const result = createBranch(sprint.local_path, branchName);
+        if (result.ok && result.branch) {
+          db.prepare("UPDATE sprints SET branch_name = ? WHERE id = ?").run(result.branch, id);
+        }
+      }
     }
-    // Move todo stories in this sprint to 'todo' status
-    db.prepare("UPDATE stories SET status = 'todo', updated_at = datetime('now') WHERE sprint_id = ? AND status = 'backlog'").run(id);
+
+    // Sprint is now optional in the flow model — activating one no longer auto-promotes
+    // stories. Sprint serves as grouping/label only. Users move stories via the board.
   }
 
   const allowed = ["name", "goal", "start_date", "end_date", "status"] as const;

@@ -1,8 +1,18 @@
 export type Priority = "low" | "medium" | "high" | "urgent";
-export type StoryStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done";
+
+// Linear-style flow workflow (replaces the old sprint-style states).
+// Migration: in_dev → in_progress, in_qa → human_review, ready → human_review, released → done.
+export type StoryStatus =
+  | "backlog"
+  | "todo"
+  | "in_progress"
+  | "human_review"
+  | "done"
+  | "cancelled";
 export type StoryType = "story" | "bug" | "task" | "spike";
+export type StoryMode = "auto" | "manual";
 export type SprintStatus = "planning" | "active" | "completed";
-export type Provider = "claude" | "codex" | "copilot" | "gemini" | "custom";
+export type Provider = "claude" | "claude-code" | "codex" | "codex-cli" | "gemini" | "custom";
 export type ContextSection =
   | "overview"
   | "prd"
@@ -24,7 +34,6 @@ export interface Project {
   definition_of_done: string | null;
   status: "active" | "archived";
   created_at: string;
-  // Aggregates
   story_count?: number;
   active_count?: number;
   active_sprint_count?: number;
@@ -49,6 +58,7 @@ export interface Sprint {
   end_date: string | null;
   capacity: number | null;
   status: SprintStatus;
+  branch_name: string | null;
   created_at: string;
 }
 
@@ -72,6 +82,23 @@ export interface Story {
   assigned_agent_id: string | null;
   created_at: string;
   updated_at: string;
+  // Dev / QA / Rollout
+  branch_name: string | null;
+  pr_url: string | null;
+  pr_number: number | null;
+  qa_test_cases: string | null;
+  qa_notes: string | null;
+  qa_result: "pass" | "fail" | null;
+  qa_signed_off_by: string | null;
+  qa_signed_off_at: string | null;
+  staging_url: string | null;
+  deploy_env: string | null;
+  deploy_url: string | null;
+  commit_hash: string | null;
+  deployed_at: string | null;
+  parent_story_id: string | null;
+  pipeline_mode: number;
+  mode: StoryMode;
   // Joined fields
   agent_name?: string | null;
   agent_provider?: string | null;
@@ -80,9 +107,16 @@ export interface Story {
   sprint_name?: string | null;
 }
 
+export type AgentRole =
+  | "frontend" | "backend" | "fullstack" | "qa"
+  | "devops" | "techlead" | "security" | "docs" | "custom";
+
+export type AgentStatus = "idle" | "in_progress";
+
 export interface Agent {
   id: string;
   name: string;
+  role: AgentRole | null;
   provider: Provider;
   model: string | null;
   system_prompt: string | null;
@@ -90,6 +124,127 @@ export interface Agent {
   created_at: string;
   story_count?: number;
   active_count?: number;
+}
+
+// Legacy phase — kept for backward compat with the DB column, but UI uses TaskStatus
+export type TaskPhase =
+  | "pending" | "designing" | "design_done"
+  | "implementing" | "done" | "failed";
+
+export type TaskStatus = "todo" | "in_progress" | "in_review" | "done" | "blocked" | "failed";
+
+export type TaskType = "subtask" | "defect" | "spike";
+
+export type DefectSeverity = "critical" | "major" | "minor" | "trivial";
+
+export type FoundDuring = "dev" | "qa" | "uat" | "prod";
+
+export interface StoryTask {
+  id: string;
+  story_id: string;
+  seq: number;
+  type: TaskType;
+  title: string;
+  description: string | null;
+  acceptance_criteria: string | null;
+  estimate_hours: number | null;
+  logged_hours: number | null;
+  role: AgentRole;
+  agent_id: string | null;
+  scope_paths: string;   // JSON string — parse with JSON.parse
+  depends_on: string;    // JSON string — parse with JSON.parse
+  status: TaskStatus;
+  phase: TaskPhase;      // legacy
+  design_output: string | null;
+  impl_summary: string | null;
+  // Defect-specific
+  severity: DefectSeverity | null;
+  steps_to_repro: string | null;
+  expected: string | null;
+  actual: string | null;
+  found_during: FoundDuring | null;
+  linked_task_id: string | null;
+  agent_name?: string | null;
+  agent_role?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentStory {
+  id: string;
+  key: string;
+  title: string;
+  type: StoryType;
+  status: StoryStatus;
+  story_points: number | null;
+  priority: Priority;
+  qa_result: "pass" | "fail" | null;
+  updated_at: string;
+  created_at: string;
+  project_name: string;
+  sprint_name: string | null;
+  epic_title: string | null;
+  epic_color: string | null;
+}
+
+export interface AgentRun {
+  id: string;
+  story_id: string | null;
+  task_id: string | null;
+  agent_id: string | null;
+  run_type: string;
+  model: string | null;
+  provider: string;
+  tokens_in: number;
+  tokens_out: number;
+  turns: number;
+  prompt_text: string | null;
+  output_text: string | null;
+  created_at: string;
+  agent_name?: string | null;
+  agent_role?: string | null;
+}
+
+// Orchestrator snapshot (Symphony §13.3)
+export interface SnapshotRunning {
+  storyId: string;
+  identifier: string;
+  startedAt: string;
+  attempt: number;
+  turnCount: number;
+  tokenIn: number;
+  tokenOut: number;
+  lastEventAt: string;
+  elapsedSec: number;
+}
+export interface SnapshotRetrying {
+  storyId: string;
+  identifier: string;
+  attempt: number;
+  dueInSec: number;
+  error: string | null;
+}
+export interface Snapshot {
+  running: SnapshotRunning[];
+  retrying: SnapshotRetrying[];
+  totals: {
+    runningCount: number;
+    retryingCount: number;
+    completedCount: number;
+    tokenIn: number;
+    tokenOut: number;
+    secondsRunning: number;
+  };
+  wipLimit: number;
+  pollIntervalMs: number;
+}
+
+export interface SystemEvent {
+  id: string;
+  type: string;
+  level: "debug" | "info" | "warn" | "error";
+  content: string;
+  created_at: string;
 }
 
 export interface ProjectContext {

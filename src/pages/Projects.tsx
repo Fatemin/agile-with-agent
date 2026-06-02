@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FolderKanban, Plus } from "lucide-react";
+import { FolderKanban, FolderOpen, Github, Plus, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -15,57 +15,231 @@ const PROJECT_COLORS = [
   "#0891B2", "#8B5CF6", "#F59E0B", "#22C55E", "#EF4444", "#EC4899", "#F97316", "#14B8A6",
 ];
 
+type Source = "none" | "local" | "github";
+
+interface CreateForm {
+  key: string;
+  name: string;
+  description: string;
+  color: string;
+  source: Source;
+  is_existing: boolean;
+  local_path: string;
+  github_url: string;
+}
+
+const INITIAL_FORM: CreateForm = {
+  key: "", name: "", description: "", color: "#0891B2",
+  source: "none", is_existing: false, local_path: "", github_url: "",
+};
+
+const SOURCE_OPTIONS = [
+  { value: "none" as Source, label: "No code yet", Icon: Sparkles },
+  { value: "local" as Source, label: "Local directory", Icon: FolderOpen },
+  { value: "github" as Source, label: "GitHub repo", Icon: Github },
+];
+
 function CreateProjectDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
-  const [form, setForm] = useState({ key: "", name: "", description: "", color: "#0891B2" });
+  const [step, setStep] = useState<1 | 2>(1);
+  const [form, setForm] = useState<CreateForm>(INITIAL_FORM);
+
   const mutation = useMutation({
-    mutationFn: () => api.projects.create(form),
+    mutationFn: () => api.projects.create({
+      key: form.key,
+      name: form.name,
+      description: form.description || undefined,
+      color: form.color,
+      local_path: form.source === "local" && form.local_path ? form.local_path : undefined,
+      github_url: form.source === "github" && form.github_url ? form.github_url : undefined,
+      is_existing: form.is_existing,
+    }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
-      toast.success("Project created");
-      onClose();
-      setForm({ key: "", name: "", description: "", color: "#0891B2" });
+      toast.success(form.is_existing ? "Project created and scanned" : "Project created");
+      handleClose();
     },
     onError: () => toast.error("Failed to create project"),
   });
 
+  const handleClose = () => {
+    onClose();
+    setStep(1);
+    setForm(INITIAL_FORM);
+  };
+
+  const step2Valid =
+    form.source === "none" ||
+    (form.source === "local" && (!form.is_existing || form.local_path.trim() !== "")) ||
+    (form.source === "github" && (!form.is_existing || form.github_url.trim() !== ""));
+
   return (
-    <Dialog open={open} onClose={onClose} title="New Project">
-      <div className="flex flex-col gap-4">
-        <div className="flex gap-3">
-          <div className="flex flex-col gap-1.5 w-28">
-            <Label htmlFor="key">Key</Label>
-            <Input id="key" placeholder="PROJ" value={form.key}
-              onChange={(e) => setForm((f) => ({ ...f, key: e.target.value.toUpperCase().slice(0, 6) }))} />
-          </div>
-          <div className="flex flex-col gap-1.5 flex-1">
-            <Label htmlFor="name">Name</Label>
-            <Input id="name" placeholder="My Project" value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-          </div>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Description</Label>
-          <Textarea rows={3} placeholder="What is this project about?" value={form.description}
-            onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label>Color</Label>
-          <div className="flex gap-2">
-            {PROJECT_COLORS.map((c) => (
-              <button key={c} type="button" onClick={() => setForm((f) => ({ ...f, color: c }))}
-                className="size-6 rounded-full transition-transform hover:scale-110 focus:outline-none"
-                style={{ backgroundColor: c, outline: form.color === c ? `2px solid ${c}` : undefined, outlineOffset: "2px" }}
-              />
-            ))}
-          </div>
-        </div>
+    <Dialog open={open} onClose={handleClose} title="New Project">
+      <div className="flex gap-1.5 mb-5">
+        {([1, 2] as const).map((s) => (
+          <div key={s} className={`h-1 flex-1 rounded-full transition-colors ${step >= s ? "bg-accent" : "bg-border"}`} />
+        ))}
       </div>
+
+      {step === 1 && (
+        <div className="flex flex-col gap-4">
+          <div className="flex gap-3">
+            <div className="flex flex-col gap-1.5 flex-1">
+              <Label htmlFor="name">Name</Label>
+              <Input
+                id="name"
+                placeholder="My Project"
+                value={form.name}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  const autoKey = name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+                  setForm((f) => ({ ...f, name, key: f.key || autoKey }));
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5 w-24">
+              <Label htmlFor="key">Key</Label>
+              <Input
+                id="key"
+                placeholder="PROJ"
+                value={form.key}
+                onChange={(e) => setForm((f) => ({ ...f, key: e.target.value.toUpperCase().slice(0, 6) }))}
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Description</Label>
+            <Textarea
+              rows={3}
+              placeholder="What is this project about?"
+              value={form.description}
+              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Color</Label>
+            <div className="flex gap-2">
+              {PROJECT_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, color: c }))}
+                  className="size-6 rounded-full transition-transform hover:scale-110 focus:outline-none"
+                  style={{ backgroundColor: c, outline: form.color === c ? `2px solid ${c}` : undefined, outlineOffset: "2px" }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-2">
+            <Label>Where is this project?</Label>
+            <div className="grid grid-cols-3 gap-2">
+              {SOURCE_OPTIONS.map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, source: value, is_existing: false }))}
+                  className={`flex flex-col items-center gap-2 rounded-lg border p-3 text-xs transition-colors ${
+                    form.source === value
+                      ? "border-accent bg-accent/10 text-content-primary"
+                      : "border-border text-content-secondary hover:border-accent/40 hover:text-content-primary"
+                  }`}
+                >
+                  <Icon size={18} />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {form.source === "local" && (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="local_path">Directory path</Label>
+                <Input
+                  id="local_path"
+                  placeholder="/Users/you/projects/my-app"
+                  value={form.local_path}
+                  onChange={(e) => setForm((f) => ({ ...f, local_path: e.target.value }))}
+                />
+              </div>
+              <div className="flex gap-2">
+                {([false, true] as const).map((val) => (
+                  <button
+                    key={String(val)}
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, is_existing: val }))}
+                    className={`flex-1 rounded-md border px-3 py-2 text-xs transition-colors ${
+                      form.is_existing === val
+                        ? "border-accent bg-accent/10 text-content-primary"
+                        : "border-border text-content-secondary hover:text-content-primary"
+                    }`}
+                  >
+                    {val ? "Existing project — scan for content" : "New project"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {form.source === "github" && (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="github_url">Repository URL</Label>
+                <Input
+                  id="github_url"
+                  placeholder="https://github.com/owner/repo"
+                  value={form.github_url}
+                  onChange={(e) => setForm((f) => ({ ...f, github_url: e.target.value }))}
+                />
+              </div>
+              <div className="flex gap-2">
+                {([false, true] as const).map((val) => (
+                  <button
+                    key={String(val)}
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, is_existing: val }))}
+                    className={`flex-1 rounded-md border px-3 py-2 text-xs transition-colors ${
+                      form.is_existing === val
+                        ? "border-accent bg-accent/10 text-content-primary"
+                        : "border-border text-content-secondary hover:text-content-primary"
+                    }`}
+                  >
+                    {val ? "Existing project — scan for content" : "New project"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <DialogFooter>
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="accent" onClick={() => mutation.mutate()} disabled={!form.key || !form.name || mutation.isPending}>
-          Create
-        </Button>
+        {step === 1 ? (
+          <>
+            <Button variant="ghost" onClick={handleClose}>Cancel</Button>
+            <Button variant="accent" onClick={() => setStep(2)} disabled={!form.key || !form.name}>
+              Next
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="ghost" onClick={() => setStep(1)}>Back</Button>
+            <Button
+              variant="accent"
+              onClick={() => mutation.mutate()}
+              disabled={!step2Valid || mutation.isPending}
+            >
+              {mutation.isPending
+                ? (form.is_existing ? "Scanning..." : "Creating...")
+                : (form.is_existing ? "Create & Scan" : "Create")}
+            </Button>
+          </>
+        )}
       </DialogFooter>
     </Dialog>
   );

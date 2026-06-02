@@ -6,3 +6,9 @@ data/
 *.db
 *.db-shm
 *.db-wal
+
+# Runtime logs
+*.log
+
+# External reference material (not part of this project)
+ref/

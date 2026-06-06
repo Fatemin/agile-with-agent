@@ -4,7 +4,11 @@
 
 **Agile with Agent** is a lightweight agile project management tool built for AI-augmented development teams. It combines standard scrum/kanban workflows with first-class support for assigning AI coding agents (Claude, Codex, Copilot, Gemini, etc.) to user stories. The key differentiator is the **Project Context** system — a structured knowledge base per project that gives agents the background they need to execute stories correctly.
 
-**Current Status:** MVP — core project management loop is functional. Agent execution is not yet automated (agents are assigned but not invoked).
+**Current Status:** Working MVP. The core project-management loop **and** autonomous agent execution
+are functional: an orchestrator dispatches stories, plans them into tasks, runs the Claude Code CLI
+against each task in an isolated git worktree, and gates on QA before handing off to human review.
+See the [README](README.md) for the execution model and [specs.md](specs.md) (Symphony) for the
+orchestrator design. Remaining gaps are tracked under [Known limitations](README.md#known-limitations).
 
 ---
 
@@ -72,7 +76,8 @@ Modern AI coding agents can implement features autonomously, but they lack struc
 
 #### 1.4 Stories
 - Types: `story` | `bug` | `task` | `spike`
-- Status flow: `backlog` → `todo` → `in_progress` → `in_review` → `done`
+- Status flow (Linear-style): `backlog` → `todo` → `in_progress` → `human_review` → `done` (plus `cancelled`). `todo`/`in_progress` are active states the orchestrator acts on; `done`/`cancelled` are terminal.
+- Execution mode: `manual` (run from the UI) or `auto` (picked up by the orchestrator)
 - Priority: `low` | `medium` | `high` | `urgent`
 - User story format: "As a ___, I want ___, so that ___"
 - Acceptance criteria, description, definition of done (inherits from project if unset)
@@ -114,7 +119,7 @@ Modern AI coding agents can implement features autonomously, but they lack struc
   - `{{story_title}}` — story title
   - `{{story_description}}` — description / user story
   - `{{acceptance_criteria}}` — acceptance criteria checklist
-- (Planned) Project context injection into prompt before agent execution
+- Project context is injected into the agent prompt before execution (see [contextBuilder](server/contextBuilder.ts))
 
 ---
 
@@ -171,10 +176,10 @@ Modern AI coding agents can implement features autonomously, but they lack struc
 4. Click "Start" on sprint → stories move to Todo, board becomes active
 
 ### Assign agent to a story and track work
-1. Open story detail → Assigned Agent → select agent
-2. Story appears on board under agent's name
-3. (Manual for now) Execute agent with generated prompt
-4. Move story through In Progress → In Review → Done
+1. Open story detail → Assigned Agent → select agent (or let the pipeline resolve agents by role)
+2. Set the story to `auto` mode (orchestrator picks it up) or run it manually from the UI
+3. The agent pipeline runs in an isolated worktree; progress streams to the story activity log
+4. On QA pass the story moves to Human Review; a human acknowledges to mark it Done
 
 ### Build project context for agents
 1. Go to project Context tab
@@ -186,7 +191,6 @@ Modern AI coding agents can implement features autonomously, but they lack struc
 
 ## Out of Scope (MVP)
 
-- **Agent execution automation** — invoking agents via API or CLI is not implemented; assignment is tracking-only
 - **Real-time collaboration** — no multi-user sync or presence
 - **Notifications** — no email/Slack alerts
 - **GitHub integration beyond scanning** — no PR creation, issue sync, or status updates
@@ -197,10 +201,12 @@ Modern AI coding agents can implement features autonomously, but they lack struc
 
 ## Planned / Future Features
 
+> ✅ **Shipped since the original PRD:** agent execution via the Claude Code CLI, project-context
+> injection into the agent prompt, the Symphony orchestrator (autonomous dispatch / retry / recovery),
+> per-story git-worktree isolation, and the Tech-Lead → multi-task → QA pipeline.
+
 | Feature | Priority | Notes |
 |---------|----------|-------|
-| Agent execution via Claude Code CLI | High | Run `claude` with generated prompt, capture output |
-| Context injection into agent prompt | High | Append relevant context sections to story prompt |
 | Story auto-decomposition | Medium | Agent breaks epic into stories |
 | PR → story status sync | Medium | Close story when PR merged |
 | Story comments / activity log | Medium | Track what happened, agent output log |

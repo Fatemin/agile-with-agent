@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
-import { db } from "../db.js";
+import { db, type SqlParam } from "../db.js";
 import { orchestrator } from "../orchestrator.js";
-import { buildBranchName, createBranch } from "../git.js";
+import { buildBranchName, createBranchNoCheckout } from "../git.js";
 import { log } from "../logger.js";
 
 export const storiesRouter = new Hono();
@@ -44,7 +44,7 @@ function getNextKey(projectId: string): string {
 storiesRouter.get("/", (c) => {
   const { project_id, sprint_id, epic_id, status, type } = c.req.query();
   let sql = `${STORY_JOIN} WHERE 1=1`;
-  const params: unknown[] = [];
+  const params: SqlParam[] = [];
   if (project_id) { sql += " AND s.project_id = ?"; params.push(project_id); }
   if (sprint_id === "null") { sql += " AND s.sprint_id IS NULL"; }
   else if (sprint_id) { sql += " AND s.sprint_id = ?"; params.push(sprint_id); }
@@ -149,9 +149,9 @@ storiesRouter.patch("/:id", async (c) => {
   } | undefined;
 
   const updates: string[] = [];
-  const vals: unknown[] = [];
+  const vals: SqlParam[] = [];
   for (const k of allowed) {
-    if (k in body) { updates.push(`${k} = ?`); vals.push(body[k] ?? null); }
+    if (k in body) { updates.push(`${k} = ?`); vals.push((body[k] ?? null) as SqlParam); }
   }
   if (updates.length) {
     updates.push("updated_at = datetime('now')");
@@ -231,7 +231,7 @@ storiesRouter.patch("/:id", async (c) => {
     if (newStatus === "in_progress") {
       if (prev.local_path && !prev.branch_name) {
         const branchName = buildBranchName(prev.key, prev.title);
-        const result = createBranch(prev.local_path, branchName);
+        const result = createBranchNoCheckout(prev.local_path, branchName);
         if (result.ok && result.branch) {
           db.prepare("UPDATE stories SET branch_name = ? WHERE id = ?").run(result.branch, id);
           log(id, "git", `Branch created: \`${result.branch}\``, "system");

@@ -1,9 +1,20 @@
 import { db } from "./db.js";
 import { log } from "./logger.js";
-import { buildBranchName, createBranch, createBranchFrom } from "./git.js";
 import { nanoid } from "nanoid";
 import { buildTaskPromptBlocks, type PriorTaskContext } from "./contextBuilder.js";
 import { runClaudeCode, recordAgentRun, type RunResult } from "./claudeRunner.js";
+
+/**
+ * Test seam (A-layer E2E). The whole pipeline is deterministic except the one
+ * external, paid, non-deterministic step: spawning the Claude Code CLI. Tests
+ * inject a fake runner here to exercise the full business chain offline.
+ * Production code never calls the setter, so behavior is unchanged by default.
+ */
+type ClaudeRunnerFn = typeof runClaudeCode;
+let activeClaudeRunner: ClaudeRunnerFn = runClaudeCode;
+export function __setClaudeRunner(fn: ClaudeRunnerFn | null): void {
+  activeClaudeRunner = fn ?? runClaudeCode;
+}
 import { getAgentRuntimeConfig } from "./runtimeConfig.js";
 import { ensureWorkspace } from "./workspace.js";
 import { loadWorkflow } from "./workflow.js";
@@ -212,14 +223,12 @@ function findIdleAgentWithFallback(role: string): { agent: AgentRow; usedRole: s
   return null;
 }
 
-function inferTaskRole(story: StoryRow, title: string, description: string | null): string {
-  const text = `${story.title} ${title} ${description ?? ""}`.toLowerCase();
-  // QA only when it's clearly a QA-specific task (not just any title containing "test")
-  if (/\b(qa|verify|validation|regression|test\s+plan|test\s+case)\b/.test(text)) return "qa";
-  if (/\b(ui|frontend|browser|react|component|css|layout|header|localstorage)\b/.test(text)) return "frontend";
-  if (/\b(api|server|backend|route|database|sql|migration|endpoint|model)\b/.test(text)) return "backend";
-  return "fullstack";
-}
+// Keyword signals for task decomposition. A story that touches BOTH the UI and
+// the server is split into a backend task + a frontend task; a story that hits
+// only one side becomes a single task in that specialty; a story that hits
+// neither becomes one fullstack task.
+const FRONTEND_SIGNAL = /\b(ui|frontend|browser|react|component|css|layout|header|localstorage)\b/;
+const BACKEND_SIGNAL  = /\b(api|server|backend|route|database|sql|migration|endpoint|model)\b/;
 
 function getStoryContext(storyId: string): { description: string | null; acceptance_criteria: string | null; type: string } | null {
   return db.prepare("SELECT description, acceptance_criteria, type FROM stories WHERE id = ?").get(storyId) as
@@ -238,49 +247,17 @@ function buildAC(items: string[]): string {
  * Always ends with a QA verification task.
  */
 function inferTasks(story: StoryRow): PlannedTask[] {
-  const text = `${story.title}`.toLowerCase();
-  const role = inferTaskRole(story, story.title, null);
   const ctx = getStoryContext(story.id);
   const storyDesc = ctx?.description?.trim() || "";
+  const text = `${story.title} ${ctx?.description ?? ""}`.toLowerCase();
   const tasks: Omit<PlannedTask, "seq">[] = [];
 
-  const isCrossStack = /\b(api|server|backend|ui|frontend|component|header|localstorage|database|sql)\b/.test(text);
+  const hasFrontend = FRONTEND_SIGNAL.test(text);
+  const hasBackend  = BACKEND_SIGNAL.test(text);
 
-  if (role === "frontend") {
-    tasks.push({
-      type: "subtask",
-      title: `Implement: ${story.title}`,
-      description: storyDesc ||
-        `Build the UI for the story.\n` +
-        `Reference the design system and existing components for consistency.\n` +
-        `Use semantic tokens; avoid hard-coded colors/spacing.`,
-      acceptance_criteria: buildAC([
-        "UI renders correctly in all supported breakpoints",
-        "Matches design system tokens (colors, spacing, typography)",
-        "Handles loading and error states",
-        "No console errors or warnings",
-      ]),
-      estimate_hours: 3,
-      role: "frontend",
-    });
-  } else if (role === "backend") {
-    tasks.push({
-      type: "subtask",
-      title: `Implement: ${story.title}`,
-      description: storyDesc ||
-        `Build the server-side logic for the story.\n` +
-        `Define request/response shape, validate input, handle error paths.\n` +
-        `Update the data model if needed.`,
-      acceptance_criteria: buildAC([
-        "Endpoint returns correct shape for the happy path",
-        "Validates input and returns 4xx for invalid requests",
-        "Handles concurrent / edge-case requests safely",
-        "Logged appropriately for observability",
-      ]),
-      estimate_hours: 3,
-      role: "backend",
-    });
-  } else if (isCrossStack) {
+  if (hasFrontend && hasBackend) {
+    // Cross-stack → split into a backend task then a frontend task that
+    // consumes it. (The frontend task depends_on the backend via its seq order.)
     tasks.push(
       {
         type: "subtask",
@@ -312,6 +289,40 @@ function inferTasks(story: StoryRow): PlannedTask[] {
         role: "frontend",
       },
     );
+  } else if (hasFrontend) {
+    tasks.push({
+      type: "subtask",
+      title: `Implement: ${story.title}`,
+      description: storyDesc ||
+        `Build the UI for the story.\n` +
+        `Reference the design system and existing components for consistency.\n` +
+        `Use semantic tokens; avoid hard-coded colors/spacing.`,
+      acceptance_criteria: buildAC([
+        "UI renders correctly in all supported breakpoints",
+        "Matches design system tokens (colors, spacing, typography)",
+        "Handles loading and error states",
+        "No console errors or warnings",
+      ]),
+      estimate_hours: 3,
+      role: "frontend",
+    });
+  } else if (hasBackend) {
+    tasks.push({
+      type: "subtask",
+      title: `Implement: ${story.title}`,
+      description: storyDesc ||
+        `Build the server-side logic for the story.\n` +
+        `Define request/response shape, validate input, handle error paths.\n` +
+        `Update the data model if needed.`,
+      acceptance_criteria: buildAC([
+        "Endpoint returns correct shape for the happy path",
+        "Validates input and returns 4xx for invalid requests",
+        "Handles concurrent / edge-case requests safely",
+        "Logged appropriately for observability",
+      ]),
+      estimate_hours: 3,
+      role: "backend",
+    });
   } else {
     tasks.push({
       type: "subtask",
@@ -489,12 +500,12 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
   const projectPath = ws.path;
 
   // Build prompt — include prior completed tasks for handoff context
-  const priorTasks: PriorTaskContext[] = db.prepare(
+  const priorTasks = db.prepare(
     `SELECT seq, title, role, design_output, impl_summary
      FROM story_tasks
      WHERE story_id = ? AND seq < ? AND status = 'done'
      ORDER BY seq ASC`
-  ).all(storyId, task.seq) as PriorTaskContext[];
+  ).all(storyId, task.seq) as unknown as PriorTaskContext[];
 
   const role = (agent.role ?? task.role) as Parameters<typeof buildTaskPromptBlocks>[0]["agentRole"];
   const blocks = buildTaskPromptBlocks({
@@ -528,7 +539,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
   }
 
   const resultRef: { current: RunResult | null } = { current: null };
-  yield* runClaudeCode({
+  yield* activeClaudeRunner({
     prompt: userPrompt,
     systemPrompt: blocks.systemBlock,
     cwd: projectPath,
@@ -631,12 +642,12 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
   const projectPath = ws.path;
 
   // Build QA prompt — same project context, but instructions focused on verification
-  const priorTasks: PriorTaskContext[] = db.prepare(
+  const priorTasks = db.prepare(
     `SELECT seq, title, role, design_output, impl_summary
      FROM story_tasks
      WHERE story_id = ? AND status = 'done' AND role != 'qa'
      ORDER BY seq ASC`
-  ).all(storyId) as PriorTaskContext[];
+  ).all(storyId) as unknown as PriorTaskContext[];
 
   const blocks = buildTaskPromptBlocks({
     storyId,
@@ -675,7 +686,7 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
   }
 
   const resultRef: { current: RunResult | null } = { current: null };
-  yield* runClaudeCode({
+  yield* activeClaudeRunner({
     prompt: userPrompt,
     systemPrompt: blocks.systemBlock,
     cwd: projectPath,
@@ -724,7 +735,10 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
     db.prepare("UPDATE stories SET qa_result = 'fail', qa_notes = ?, updated_at = datetime('now') WHERE id = ?")
       .run(reason, storyId);
     log(storyId, "qa", `✗ QA failed: ${reason}`, "agent", "warn");
-    yield { type: "progress", content: `QA failed: ${reason}` };
+    // QA is a hard gate: surface a FAIL as an error so the pipeline halts and the
+    // story is NOT advanced to human_review. The story stays in_progress with
+    // qa_result='fail' for a human/agent to address and re-run.
+    yield { type: "error", content: `QA failed: ${reason}` };
   } else if (passMatch) {
     db.prepare("UPDATE stories SET qa_result = 'pass', status = 'human_review', updated_at = datetime('now') WHERE id = ?").run(storyId);
     log(storyId, "qa", `✓ QA passed`, "agent");
@@ -793,10 +807,6 @@ export async function* executePipeline(storyId: string, opts?: RunOptions): Asyn
   yield { type: "done", content: "Pipeline complete" };
 }
 
-export async function* runSingleAgentStory(storyId: string): AsyncGenerator<ExecutionEvent> {
-  yield* executeStory(storyId);
-}
-
 export async function* executeStory(storyId: string, opts?: RunOptions): AsyncGenerator<ExecutionEvent> {
   const story = getStory(storyId);
   if (!story) {
@@ -833,26 +843,6 @@ export async function* executeStory(storyId: string, opts?: RunOptions): AsyncGe
 
   // Signal is propagated all the way down to claudeRunner — child processes get SIGTERM on abort.
   yield* executePipeline(storyId, opts);
-}
-
-export async function spawnAutoStory(storyId: string): Promise<void> {
-  // Drain the generator chain to completion — do NOT break on the first error,
-  // because breaking triggers GeneratorReturn upstream which prevents
-  // executePipeline / executeTask / executeQA from running their own
-  // finalization logs (e.g. "Pipeline halted at task #N").
-  let lastError: string | null = null;
-  try {
-    for await (const event of executeStory(storyId)) {
-      if (event.type === "error") lastError = event.content ?? "unknown";
-    }
-    if (lastError) {
-      log(storyId, "execution_error", `Auto-execution stopped: ${lastError}`, "system", "error");
-    }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    log(storyId, "execution_error", `Auto-execution exception: ${msg}`, "system", "error");
-    console.error("Auto story failed:", msg);
-  }
 }
 
 export async function* executeDocsAgent(projectId: string, agentId: string): AsyncGenerator<ExecutionEvent> {

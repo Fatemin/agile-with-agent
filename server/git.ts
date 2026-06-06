@@ -53,63 +53,38 @@ export function createBranch(localPath: string, branchName: string): GitResult {
   }
 }
 
-export function buildSprintBranchName(sprintName: string): string {
-  return `sprint/${slugify(sprintName)}`;
-}
-
-export function createBranchFrom(localPath: string, branchName: string, fromBranch: string): GitResult {
+/**
+ * Create a branch at the current HEAD **without** checking it out, then leave
+ * the main working tree untouched. This is required for the per-story worktree
+ * model: git refuses `worktree add <branch>` if that branch is already checked
+ * out in another worktree (which is exactly what `createBranch`'s `checkout -b`
+ * would cause in the main repo). Idempotent — reuses the branch if it exists.
+ */
+export function createBranchNoCheckout(localPath: string, branchName: string): GitResult {
   if (!localPath || !existsSync(localPath)) {
     return { ok: false, error: `Directory not found: ${localPath}` };
   }
+
   const git = (cmd: string) =>
     execSync(`git -C "${localPath}" ${cmd}`, { encoding: "utf8", timeout: 10_000 }).trim();
-  try { git("rev-parse --git-dir"); } catch {
+
+  try {
+    git("rev-parse --git-dir");
+  } catch {
     return { ok: false, error: `${localPath} is not a git repository` };
   }
+
   try {
     const existing = git(`branch --list "${branchName}"`).trim();
-    if (existing) {
-      git(`checkout "${branchName}"`);
-      return { ok: true, branch: branchName };
-    }
-    // Ensure the base branch exists locally (may need to fetch)
-    const baseBranches = git(`branch --list "${fromBranch}"`).trim();
-    if (!baseBranches) {
-      // Try remote
-      try { git(`fetch origin "${fromBranch}:${fromBranch}"`); } catch { /* best-effort */ }
-    }
-    git(`checkout -b "${branchName}" "${fromBranch}"`);
+    if (existing) return { ok: true, branch: branchName }; // reuse; don't switch
+    git(`branch "${branchName}"`); // create at HEAD, do NOT check it out
     return { ok: true, branch: branchName };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-export function mergeBranch(localPath: string, fromBranch: string, intoBranch: string): GitResult {
-  if (!localPath || !existsSync(localPath)) {
-    return { ok: false, error: `Directory not found: ${localPath}` };
-  }
-  const git = (cmd: string) =>
-    execSync(`git -C "${localPath}" ${cmd}`, { encoding: "utf8", timeout: 30_000 }).trim();
-  try { git("rev-parse --git-dir"); } catch {
-    return { ok: false, error: `${localPath} is not a git repository` };
-  }
-  try {
-    git(`checkout "${intoBranch}"`);
-    git(`merge --no-ff "${fromBranch}" -m "Merge ${fromBranch} into ${intoBranch}"`);
-    return { ok: true, branch: intoBranch };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+export function buildSprintBranchName(sprintName: string): string {
+  return `sprint/${slugify(sprintName)}`;
 }
 
-export function getCurrentBranch(localPath: string): string | null {
-  if (!localPath || !existsSync(localPath)) return null;
-  try {
-    return execSync(`git -C "${localPath}" branch --show-current`, {
-      encoding: "utf8", timeout: 5_000,
-    }).trim() || null;
-  } catch {
-    return null;
-  }
-}

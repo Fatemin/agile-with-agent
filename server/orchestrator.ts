@@ -1,7 +1,7 @@
 import { db } from "./db.js";
 import { log, logSystem } from "./logger.js";
 import { getAgentRuntimeConfig } from "./runtimeConfig.js";
-import { buildBranchName, createBranch } from "./git.js";
+import { buildBranchName, createBranchNoCheckout } from "./git.js";
 import { executeStory } from "./execution.js";
 import { removeWorkspace } from "./workspace.js";
 
@@ -202,7 +202,9 @@ class Orchestrator {
         { local_path: string | null } | undefined;
       if (project?.local_path) {
         const branchName = buildBranchName(candidate.key, candidate.title);
-        const result = createBranch(project.local_path, branchName);
+        // Non-checkout: the per-story worktree will check this branch out, and
+        // git forbids the same branch in two worktrees at once.
+        const result = createBranchNoCheckout(project.local_path, branchName);
         if (result.ok && result.branch) {
           db.prepare("UPDATE stories SET branch_name = ? WHERE id = ?").run(result.branch, candidate.id);
           candidate.branch_name = result.branch;

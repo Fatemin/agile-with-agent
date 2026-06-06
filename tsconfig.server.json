@@ -4,7 +4,9 @@
     "module": "ESNext",
     "moduleResolution": "node",
     "strict": true,
+    "esModuleInterop": true,
     "skipLibCheck": true,
+    "noEmit": true,
     "outDir": "dist-server"
   },
   "include": ["server"]

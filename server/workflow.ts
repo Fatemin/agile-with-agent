@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, watch as fsWatch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, statSync, watch as fsWatch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 import { logSystem } from "./logger.js";
@@ -183,7 +183,7 @@ function readAndCache(path: string): { definition: WorkflowDefinition | null; er
   }
 
   const mtimeMs = existsSync(path) ? (() => {
-    try { return require("node:fs").statSync(path).mtimeMs as number; }
+    try { return statSync(path).mtimeMs; }
     catch { return 0; }
   })() : 0;
 

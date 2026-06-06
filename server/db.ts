@@ -2,16 +2,20 @@
 // @ts-ignore — node:sqlite types not yet in @types/node
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const DATA_DIR = join(__dirname, "../data");
-const DB_PATH = join(DATA_DIR, "agile.db");
+// AGILE_DB_PATH lets tests (and ops) point at an isolated DB file.
+const DB_PATH = process.env.AGILE_DB_PATH ?? join(__dirname, "../data", "agile.db");
+const DB_DIR = dirname(DB_PATH);
 
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+if (!existsSync(DB_DIR)) mkdirSync(DB_DIR, { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
+
+/** Value types accepted as a bound parameter by node:sqlite statements. */
+export type SqlParam = string | number | bigint | null | Uint8Array;
 
 db.exec("PRAGMA journal_mode = WAL");
 db.exec("PRAGMA foreign_keys = ON");

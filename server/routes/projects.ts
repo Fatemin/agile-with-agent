@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
-import { db } from "../db.js";
+import { db, type SqlParam } from "../db.js";
 import { executeDocsAgent } from "../execution.js";
 import { scanGithub, scanLocal } from "../scanner.js";
 
@@ -83,7 +83,7 @@ projectsRouter.patch("/:id", async (c) => {
   const id = c.req.param("id");
   const allowed = ["name", "description", "color", "local_path", "github_url", "tech_stack", "definition_of_done", "status"] as const;
   for (const k of allowed) {
-    if (k in body) db.prepare(`UPDATE projects SET ${k} = ? WHERE id = ?`).run((body as Record<string, unknown>)[k] ?? null, id);
+    if (k in body) db.prepare(`UPDATE projects SET ${k} = ? WHERE id = ?`).run(((body as Record<string, unknown>)[k] ?? null) as SqlParam, id);
   }
   const row = db.prepare("SELECT * FROM projects WHERE id = ?").get(id);
   if (!row) return c.json({ error: "not found" }, 404);

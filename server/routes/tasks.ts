@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
-import { db } from "../db.js";
+import { db, type SqlParam } from "../db.js";
 import { executeTechLeadPlan, executeTask } from "../execution.js";
 import { log } from "../logger.js";
 
@@ -91,7 +91,7 @@ tasksRouter.patch("/:storyId/tasks/:taskId", async (c) => {
     "steps_to_repro", "expected", "actual", "found_during", "linked_task_id",
   ] as const;
   const updates: string[] = [];
-  const vals: unknown[] = [];
+  const vals: SqlParam[] = [];
 
   for (const k of allowed) {
     if (k in body) {
@@ -101,7 +101,7 @@ tasksRouter.patch("/:storyId/tasks/:taskId", async (c) => {
         vals.push(JSON.stringify(body[k] ?? []));
       } else {
         updates.push(`${k} = ?`);
-        vals.push(body[k] ?? null);
+        vals.push((body[k] ?? null) as SqlParam);
       }
     }
   }

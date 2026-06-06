@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { db } from "../db.js";
+import { db, type SqlParam } from "../db.js";
 
 export const runsRouter = new Hono();
 
@@ -13,7 +13,7 @@ runsRouter.get("/", (c) => {
     LEFT JOIN agents a ON r.agent_id = a.id
     WHERE 1=1
   `;
-  const params: unknown[] = [];
+  const params: SqlParam[] = [];
   if (story_id) { sql += " AND r.story_id = ?"; params.push(story_id); }
   if (agent_id) { sql += " AND r.agent_id = ?"; params.push(agent_id); }
   if (task_id)  { sql += " AND r.task_id = ?";  params.push(task_id); }

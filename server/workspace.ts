@@ -147,15 +147,3 @@ export function removeWorkspace(opts: {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
-
-/** List all worktree directories under the root (best-effort, for restart cleanup). */
-export function listWorkspaceKeys(workspaceRoot: string): string[] {
-  if (!existsSync(workspaceRoot)) return [];
-  try {
-    const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
-    return readdirSync(workspaceRoot).filter((name) => {
-      try { return statSync(join(workspaceRoot, name)).isDirectory(); }
-      catch { return false; }
-    });
-  } catch { return []; }
-}

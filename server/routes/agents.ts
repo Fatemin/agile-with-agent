@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
-import { db } from "../db.js";
+import { db, type SqlParam } from "../db.js";
 
 export const agentsRouter = new Hono();
 
@@ -42,9 +42,9 @@ agentsRouter.patch("/:id", async (c) => {
   const id = c.req.param("id");
   const allowed = ["name", "role", "provider", "model", "system_prompt", "prompt_template"] as const;
   const updates: string[] = [];
-  const vals: unknown[] = [];
+  const vals: SqlParam[] = [];
   for (const k of allowed) {
-    if (k in body) { updates.push(`${k} = ?`); vals.push((body as Record<string, unknown>)[k] ?? null); }
+    if (k in body) { updates.push(`${k} = ?`); vals.push(((body as Record<string, unknown>)[k] ?? null) as SqlParam); }
   }
   if (updates.length) db.prepare(`UPDATE agents SET ${updates.join(", ")} WHERE id = ?`).run(...vals, id);
   return c.json(db.prepare("SELECT * FROM agents WHERE id = ?").get(id));

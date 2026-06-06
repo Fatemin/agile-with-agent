@@ -7,10 +7,13 @@
     "dev:client": "vite",
     "dev:server": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node --watch server/index.ts",
     "build": "vite build",
-    "lint": "tsc --noEmit"
+    "test": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node --test tests/execution-chain.test.ts tests/orchestrator-flow.test.ts tests/orchestrator-retry.test.ts tests/orchestrator-recovery.test.ts",
+    "flow": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node tests/run-happy-flow.ts",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "lint:client": "tsc --noEmit",
+    "lint:server": "tsc --noEmit -p tsconfig.server.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.100.1",
     "@tanstack/react-query": "^5.62.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

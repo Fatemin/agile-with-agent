@@ -45,19 +45,21 @@ const TYPE_COLORS: Record<StoryType, string> = {
 };
 
 const BOARD_COLUMNS: { status: StoryStatus; label: string; icon: React.ElementType; color: string }[] = [
-  { status: "todo",         label: "Todo",          icon: ListTodo,     color: "#71717A" },
-  { status: "in_progress",  label: "In Progress",   icon: GitBranch,    color: "#0891B2" },
-  { status: "human_review", label: "Human Review",  icon: ShieldCheck,  color: "#F59E0B" },
-  { status: "done",         label: "Done",          icon: CheckCircle2, color: "#22C55E" },
+  { status: "todo",          label: "Todo",          icon: ListTodo,       color: "#71717A" },
+  { status: "design_review", label: "Design Review", icon: ClipboardCheck, color: "#8B5CF6" },
+  { status: "in_progress",   label: "In Progress",   icon: GitBranch,      color: "#0891B2" },
+  { status: "human_review",  label: "Human Review",  icon: ShieldCheck,    color: "#F59E0B" },
+  { status: "done",          label: "Done",          icon: CheckCircle2,   color: "#22C55E" },
 ];
 
 const STATUS_LABELS: Record<StoryStatus, string> = {
-  backlog:      "Backlog",
-  todo:         "Todo",
-  in_progress:  "In Progress",
-  human_review: "Human Review",
-  done:         "Done",
-  cancelled:    "Cancelled",
+  backlog:       "Backlog",
+  todo:          "Todo",
+  design_review: "Design Review",
+  in_progress:   "In Progress",
+  human_review:  "Human Review",
+  done:          "Done",
+  cancelled:     "Cancelled",
 };
 
 // Statuses that represent "active" work (for the dispatch board / running indicator)
@@ -438,12 +440,13 @@ function StoryCard({ story, onClick }: { story: Story; onClick: () => void }) {
 // ─── Story Row (Backlog list view) ────────────────────────────────────────────
 
 const STATUS_BADGE: Record<StoryStatus, string> = {
-  backlog:      "bg-surface-tertiary text-content-tertiary",
-  todo:         "bg-surface-tertiary text-content-secondary",
-  in_progress:  "bg-cyan-50 text-cyan-700 border border-cyan-200",
-  human_review: "bg-amber-50 text-amber-700 border border-amber-200",
-  done:         "bg-green-50 text-green-700 border border-green-200",
-  cancelled:    "bg-red-50 text-red-700 border border-red-200",
+  backlog:       "bg-surface-tertiary text-content-tertiary",
+  todo:          "bg-surface-tertiary text-content-secondary",
+  design_review: "bg-violet-50 text-violet-700 border border-violet-200",
+  in_progress:   "bg-cyan-50 text-cyan-700 border border-cyan-200",
+  human_review:  "bg-amber-50 text-amber-700 border border-amber-200",
+  done:          "bg-green-50 text-green-700 border border-green-200",
+  cancelled:     "bg-red-50 text-red-700 border border-red-200",
 };
 
 function StoryRow({ story, sprints, onClick, onSprintChange }: {
@@ -1705,6 +1708,26 @@ function StoryDialog({ story, onClose, epics, agents, sprints, project }: {
         {/* Right sidebar — always visible */}
         <div className="overflow-y-auto scrollbar-column p-4 flex flex-col gap-4 bg-surface-secondary/40">
 
+          {/* Design review gate — agent proposed a plan; human approves before implementation */}
+          {story.status === "design_review" && (
+            <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 flex flex-col gap-2">
+              <p className="text-[10px] font-mono font-semibold uppercase tracking-wider text-violet-700 flex items-center gap-1.5">
+                <ClipboardCheck size={10} />Design Review — approve to start dev
+              </p>
+              <div className="max-h-80 overflow-y-auto rounded-md border border-border bg-surface-card p-2 text-xs text-content-secondary whitespace-pre-wrap leading-relaxed">
+                {story.design || "(no design produced)"}
+              </div>
+              <div className="flex gap-2">
+                <Button variant="accent" size="sm" className="flex-1" onClick={() => update({ status: "in_progress" })}>
+                  <Play size={12} />Approve &amp; Implement
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => update({ status: "todo", design: null })}>
+                  <RotateCw size={12} />Redesign
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Execute panel (manual mode) */}
           {story.mode !== "auto" && (
             <ExecutePanel
@@ -1845,7 +1868,7 @@ function CreateStoryDialog({ open, onClose, projectId, epics, sprints, defaultSp
 }) {
   const qc = useQueryClient();
   const [form, setForm] = useState({
-    type: "story" as StoryType, mode: "manual" as StoryMode,
+    type: "story" as StoryType, mode: "auto" as StoryMode,
     title: "", as_a: "", i_want: "", so_that: "",
     description: "", acceptance_criteria: "", story_points: "",
     priority: "medium" as Priority, epic_id: "", sprint_id: defaultSprintId ?? "",

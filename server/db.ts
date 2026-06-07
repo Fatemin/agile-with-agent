@@ -110,51 +110,9 @@ db.exec(`
   );
 `);
 
-// Seed default execution context rules if not present
-const hasRules = db.prepare("SELECT 1 FROM settings WHERE key = 'execution_context_rules'").get();
-if (!hasRules) {
-  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
-    "execution_context_rules",
-    JSON.stringify({
-      story: ["overview", "prd", "design_system", "conventions"],
-      bug:   ["overview", "data_model", "conventions"],
-      task:  ["overview", "architecture", "conventions"],
-      spike: ["overview", "architecture", "data_model", "conventions"],
-    })
-  );
-}
-
-const hasRoleRules = db.prepare("SELECT 1 FROM settings WHERE key = 'agent_role_context_rules'").get();
-if (!hasRoleRules) {
-  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
-    "agent_role_context_rules",
-    JSON.stringify({
-      frontend:  ["overview", "design_system", "conventions"],
-      backend:   ["overview", "architecture", "data_model", "conventions"],
-      fullstack: ["overview", "architecture", "data_model", "design_system", "conventions"],
-      qa:        ["overview", "prd", "conventions"],
-      devops:    ["overview", "architecture", "conventions"],
-      techlead:  ["overview", "prd", "architecture", "data_model", "conventions"],
-      security:  ["overview", "architecture", "data_model", "conventions"],
-      custom:    ["overview", "conventions"],
-    })
-  );
-}
-
-const hasKeywordRules = db.prepare("SELECT 1 FROM settings WHERE key = 'keyword_context_rules'").get();
-if (!hasKeywordRules) {
-  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
-    "keyword_context_rules",
-    JSON.stringify([
-      { keywords: ["api", "endpoint", "rest", "graphql", "route"],     sections: ["architecture"] },
-      { keywords: ["database", "schema", "migration", "model", "sql"], sections: ["data_model"] },
-      { keywords: ["ui", "component", "style", "css", "layout", "design", "color", "theme"], sections: ["design_system"] },
-      { keywords: ["auth", "login", "permission", "role", "token", "jwt"], sections: ["architecture", "data_model"] },
-      { keywords: ["test", "spec", "unit", "e2e", "qa"],               sections: ["conventions"] },
-      { keywords: ["deploy", "ci", "cd", "pipeline", "docker"],        sections: ["architecture"] },
-    ])
-  );
-}
+// Context-section selection is relevance-based (CONTEXT.md §9, Phase 5) via the
+// context_fts index above — the old static execution/role/keyword rule settings
+// were retired. Existing rows (if any) are left dormant.
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS story_tasks (
@@ -173,6 +131,32 @@ db.exec(`
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
+`);
+
+// CONTEXT.md §9 (Phase 5) — full-text index over project context sections so the
+// context builder picks sections by relevance (FTS5 bm25) instead of static
+// keyword/role/type rules. Kept in sync with project_contexts via triggers.
+db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS context_fts USING fts5(section UNINDEXED, content, project_id UNINDEXED);
+
+  CREATE TRIGGER IF NOT EXISTS context_fts_ai AFTER INSERT ON project_contexts BEGIN
+    INSERT INTO context_fts(rowid, section, content, project_id)
+    VALUES (new.rowid, new.section, COALESCE(new.content, ''), new.project_id);
+  END;
+  CREATE TRIGGER IF NOT EXISTS context_fts_ad AFTER DELETE ON project_contexts BEGIN
+    DELETE FROM context_fts WHERE rowid = old.rowid;
+  END;
+  CREATE TRIGGER IF NOT EXISTS context_fts_au AFTER UPDATE ON project_contexts BEGIN
+    DELETE FROM context_fts WHERE rowid = old.rowid;
+    INSERT INTO context_fts(rowid, section, content, project_id)
+    VALUES (new.rowid, new.section, COALESCE(new.content, ''), new.project_id);
+  END;
+`);
+// Backfill rows that predate the index (idempotent).
+db.exec(`
+  INSERT INTO context_fts(rowid, section, content, project_id)
+  SELECT rowid, section, COALESCE(content, ''), project_id FROM project_contexts
+  WHERE rowid NOT IN (SELECT rowid FROM context_fts);
 `);
 
 // CONTEXT.md §5.1 — per-story working memory ("snapshot"). One row per story.

@@ -1,6 +1,6 @@
 # Context & State Management Specification
 
-Status: Draft v1 — **Phases 1–4 implemented** (snapshot, decisions, artifacts+budget, planner); Phase 5 proposed.
+Status: Draft v1 — **Phases 1–5 implemented** (snapshot, decisions, artifacts+budget, planner, FTS5 retrieval). Spec realized.
 
 Purpose: Define how this system assembles the context a coding agent sees for a unit of work,
 so that **prompt size stays roughly constant as a story grows**, decisions are not lost, and a new
@@ -332,7 +332,7 @@ Each phase keeps `npm test` green via the fake-runner seam and is small enough t
 | **2 ✅** | `decisions` table + `DECISION:` marker parse + compact injection. | **Done.** Decisions stop getting lost / re-derived; same-topic supersession keeps one current answer. New module [server/decisions.ts](server/decisions.ts). (`story_snapshot.decisions[]` stays reserved until Phase 3 scopes them per task.) |
 | **3 ✅** | `artifacts` manifest + populate `scope_paths` + scoped/budgeted retrieval (replaces wholesale section injection). | **Done.** New module [server/artifacts.ts](server/artifacts.ts); files registered from `git diff` + `ARTIFACT:` markers; manifest ranked by the task's `scope_paths`; project context now injected under `context_token_budget` (default 8000). Static section *rules* still pick candidates — replacing them with FTS5/embeddings is Phase 5. |
 | **4 ✅** | Real Planner agent (CTX §8) behind the design gate. | **Done.** The design agent emits a fenced JSON task graph; [server/planner.ts](server/planner.ts) normalizes it; `executeDesign` builds tasks from it (real `depends_on`/`scope_paths`, appended QA gate) and falls back to `inferTasks` offline. |
-| **5** | FTS5 (or embeddings) retrieval upgrade. | Relevance ranking replaces static keyword rules. |
+| **5 ✅** | FTS5 retrieval upgrade. | **Done.** `context_fts` (FTS5) indexes project context sections, kept in sync via triggers; [server/retrieval.ts](server/retrieval.ts) ranks sections by bm25 relevance to the task. Static rules + the Settings rules UI retired. Embeddings remain optional/future. |
 
 Phase 1 is the recommended first cut: it directly delivers the "token cost approaches constant"
 goal and de-risks the rest.
@@ -413,7 +413,7 @@ that's already dead.
 | `story_snapshot` + snapshot injection | The prior-task concatenation loop and its query | **Delete** [contextBuilder.ts:163-171](server/contextBuilder.ts#L163-L171); **delete** the `priorTasks` queries at [execution.ts:505-510](server/execution.ts#L505-L510) and [execution.ts:648-653](server/execution.ts#L648-L653); drop the `priorTasks` param + `PriorTaskContext` | 1 |
 | `decisions` table + `DECISION:` marker | Decisions buried in `stories.design` / `impl_summary` prose | `stories.design` **kept** (human-reviewed plan); decisions are *extracted* into their own records | 2 |
 | `artifacts` manifest + scoped retrieval | Wholesale section injection | ✅ **Done** — `contextBlock` assembled under a token budget (drops lowest-priority sections first); artifact manifest injected as scoped pointers. | 3 |
-| Scope/relevance retrieval | The 3-layer static rules + their settings | **Retire** [`selectContextSections`](server/contextBuilder.ts#L51) and the seeded settings `execution_context_rules` / `agent_role_context_rules` / `keyword_context_rules` ([db.ts:114-157](server/db.ts#L114-L157)) **and the Settings-page UI that edits them** | 3 → 5 |
+| Scope/relevance retrieval | The 3-layer static rules + their settings | ✅ **Done (Phase 5)** — `selectContextSections` + the three rule settings (seed removed) + the Settings-page rules UI all retired; replaced by FTS5 ranking ([server/retrieval.ts](server/retrieval.ts)). Existing rule rows left dormant. | 5 |
 | Real Planner agent | `inferTasks` keyword heuristic | ✅ **Done** — `inferTasks` kept as the `enabled=false`/offline fallback; LLM planner ([server/planner.ts](server/planner.ts)) used in `executeDesign`. | 4 |
 | Planner-set `scope_paths` / `depends_on` | `scope_paths` always `[]`, `depends_on` linear | ✅ **Done** — `createTasksFromPlan` populates both from the agent's task graph. | 4 |
 

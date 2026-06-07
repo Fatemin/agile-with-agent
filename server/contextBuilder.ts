@@ -2,89 +2,11 @@ import { db } from "./db.js";
 import { renderSnapshotBlock } from "./snapshot.js";
 import { renderDecisionsBlock } from "./decisions.js";
 import { renderArtifactManifest } from "./artifacts.js";
+import { rankContextSections } from "./retrieval.js";
 import { getAgentRuntimeConfig } from "./runtimeConfig.js";
 
 type StoryType = "story" | "bug" | "task" | "spike";
 type AgentRole = "frontend" | "backend" | "fullstack" | "qa" | "devops" | "techlead" | "security" | "custom";
-
-interface KeywordRule {
-  keywords: string[];
-  sections: string[];
-}
-
-// ─── Defaults (mirrors Settings page defaults) ────────────────────────────────
-
-const DEFAULT_STORY_RULES: Record<StoryType, string[]> = {
-  story: ["overview", "prd", "design_system", "conventions"],
-  bug:   ["overview", "data_model", "conventions"],
-  task:  ["overview", "architecture", "conventions"],
-  spike: ["overview", "architecture", "data_model", "conventions"],
-};
-
-const DEFAULT_ROLE_RULES: Record<string, string[]> = {
-  frontend:  ["overview", "design_system", "conventions"],
-  backend:   ["overview", "architecture", "data_model", "conventions"],
-  fullstack: ["overview", "architecture", "data_model", "design_system", "conventions"],
-  qa:        ["overview", "prd", "conventions"],
-  devops:    ["overview", "architecture", "conventions"],
-  techlead:  ["overview", "prd", "architecture", "data_model", "conventions"],
-  security:  ["overview", "architecture", "data_model", "conventions"],
-  custom:    ["overview", "conventions"],
-};
-
-const DEFAULT_KEYWORD_RULES: KeywordRule[] = [
-  { keywords: ["api", "endpoint", "rest", "graphql", "route"],             sections: ["architecture"] },
-  { keywords: ["database", "schema", "migration", "model", "sql"],         sections: ["data_model"] },
-  { keywords: ["ui", "component", "style", "css", "layout", "design"],     sections: ["design_system"] },
-  { keywords: ["auth", "login", "permission", "role", "token", "jwt"],     sections: ["architecture", "data_model"] },
-  { keywords: ["test", "spec", "unit", "e2e", "qa"],                       sections: ["conventions"] },
-  { keywords: ["deploy", "ci", "cd", "pipeline", "docker"],                sections: ["architecture"] },
-];
-
-// ─── Load settings ────────────────────────────────────────────────────────────
-
-function loadSetting<T>(key: string, fallback: T): T {
-  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as
-    { value: string } | undefined;
-  if (!row) return fallback;
-  try { return JSON.parse(row.value) as T; } catch { return fallback; }
-}
-
-// ─── Section selection — three-layer union ────────────────────────────────────
-
-export function selectContextSections(params: {
-  storyType: StoryType;
-  agentRole: AgentRole | null;
-  titleAndDescription: string;
-}): string[] {
-  const storyRules = loadSetting<Record<string, string[]>>("execution_context_rules", DEFAULT_STORY_RULES);
-  const roleRules  = loadSetting<Record<string, string[]>>("agent_role_context_rules", DEFAULT_ROLE_RULES);
-  const kwRules    = loadSetting<KeywordRule[]>("keyword_context_rules", DEFAULT_KEYWORD_RULES);
-
-  const selected = new Set<string>();
-
-  // Layer 1 — story type
-  for (const s of storyRules[params.storyType] ?? DEFAULT_STORY_RULES[params.storyType] ?? []) {
-    selected.add(s);
-  }
-
-  // Layer 2 — agent role
-  if (params.agentRole) {
-    for (const s of roleRules[params.agentRole] ?? DEFAULT_ROLE_RULES[params.agentRole] ?? []) {
-      selected.add(s);
-    }
-  }
-
-  // Layer 3 — keyword matching
-  const text = params.titleAndDescription.toLowerCase();
-  for (const rule of kwRules) {
-    if (rule.keywords.some((kw) => text.includes(kw))) {
-      for (const s of rule.sections) selected.add(s);
-    }
-  }
-
-  return Array.from(selected);
-}
 
 // ─── Task prompt blocks (multi-agent pipeline) ───────────────────────────────
 
@@ -121,22 +43,27 @@ export function buildTaskPromptBlocks(params: {
 
   if (!story) throw new Error(`Story ${params.storyId} not found`);
 
-  const titleDesc = `${story.title} ${story.description ?? ""}`;
-  const sectionKeys = selectContextSections({
-    storyType: story.type,
-    agentRole: params.agentRole,
-    titleAndDescription: titleDesc,
-  });
+  // Relevance-ranked section selection (CONTEXT.md §9, Phase 5) — replaces the
+  // old static story-type/role/keyword rules. The budget step below then trims
+  // from the least-relevant end.
+  const query = [
+    story.title, story.description, story.acceptance_criteria,
+    params.taskTitle, params.taskDescription, (params.scopePaths ?? []).join(" "),
+  ].filter(Boolean).join(" ");
+  const rankedKeys = rankContextSections(story.project_id, query);
 
-  const contexts = sectionKeys.length > 0
-    ? db.prepare(`
-        SELECT section, title, content FROM project_contexts
-        WHERE project_id = ? AND section IN (${sectionKeys.map(() => "?").join(",")})
-        ORDER BY sort_order ASC
-      `).all(story.project_id, ...sectionKeys) as Array<{ section: string; title: string; content: string | null }>
-    : [];
-
-  const populated = contexts.filter((c) => c.content?.trim());
+  type Ctx = { section: string; title: string; content: string | null };
+  let populated: Ctx[] = [];
+  if (rankedKeys.length > 0) {
+    const rows = db.prepare(`
+      SELECT section, title, content FROM project_contexts
+      WHERE project_id = ? AND section IN (${rankedKeys.map(() => "?").join(",")})
+    `).all(story.project_id, ...rankedKeys) as Ctx[];
+    const bySection = new Map(rows.map((r) => [r.section, r]));
+    populated = rankedKeys
+      .map((k) => bySection.get(k))
+      .filter((c): c is Ctx => !!c && !!c.content?.trim());
+  }
 
   // ── Story block (bounded: story, snapshot, decisions, artifacts, task) ────────
   const parts: string[] = ["## Story\n"];

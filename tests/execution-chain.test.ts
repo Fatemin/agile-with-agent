@@ -26,6 +26,7 @@ const { recordTaskComplete } = await import("../server/snapshot.js");
 const { parseDecisionMarkers, recordDecisions, renderDecisionsBlock } = await import("../server/decisions.js");
 const { parseTaskPlan } = await import("../server/planner.js");
 const { parseArtifactMarkers, inferKind, registerArtifacts, renderArtifactManifest } = await import("../server/artifacts.js");
+const { rankContextSections } = await import("../server/retrieval.js");
 
 // ── seeding helpers ──────────────────────────────────────────────────────────
 
@@ -531,6 +532,37 @@ test("context budget: oversized project context is trimmed and reported", async 
 
     assert.ok(blocks.droppedForBudget.length >= 3, `most sections dropped for budget (dropped ${blocks.droppedForBudget.length})`);
     assert.ok(blocks.estimatedTokens < 2000, `prompt stays bounded by the budget (got ${blocks.estimatedTokens})`);
+  } finally {
+    cleanup(repo);
+  }
+});
+
+test("retrieval: FTS5 ranks context sections by relevance to the task (CONTEXT.md §9)", async () => {
+  const repo = makeTempRepo();
+  try {
+    const { storyId } = seedStoryCustom(repo, { title: "x", roles: ["fullstack", "qa"] });
+    const { project_id: projectId } = db.prepare("SELECT project_id FROM stories WHERE id = ?").get(storyId) as
+      { project_id: string };
+
+    const sections: Record<string, string> = {
+      architecture:  "The backend uses Hono routes and a REST API for endpoints and authentication tokens.",
+      design_system: "Buttons, colors, spacing, typography and React component styling guidelines.",
+      data_model:    "Database schema, SQLite tables, migrations and entity relationships.",
+    };
+    for (const [s, content] of Object.entries(sections)) {
+      db.prepare("INSERT INTO project_contexts (id, project_id, section, title, content) VALUES (?,?,?,?,?)")
+        .run(nanoid(), projectId, s, s, content);
+    }
+
+    const apiRanked = rankContextSections(projectId, "implement the REST API endpoint for authentication tokens");
+    assert.equal(apiRanked[0], "architecture", `expected architecture first, got ${apiRanked.join(",")}`);
+
+    const uiRanked = rankContextSections(projectId, "style the React button component colors and spacing");
+    assert.equal(uiRanked[0], "design_system", `expected design_system first, got ${uiRanked.join(",")}`);
+
+    // No term overlap → fallback returns all populated sections for the project.
+    const fallback = rankContextSections(projectId, "zzzzz qqqqq wwwww");
+    assert.equal(fallback.length, 3, "fallback returns all populated sections");
   } finally {
     cleanup(repo);
   }

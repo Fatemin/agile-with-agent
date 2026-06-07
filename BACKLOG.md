@@ -7,6 +7,59 @@
 
 ---
 
+## 🟡 ACTIVE — Context/State Refactor 收尾（2026-06-07）
+
+> 上下文/状态重做（CONTEXT.md Phases 1–6，已合入 master）落地后的遗留项。
+> 核心目标已完成且有测试（prompt 体积≈恒定、decision 持久化、artifact 追踪、relevance 检索、State 可视化）；
+> 下列为边角、文档/代码不一致与刻意延后项。
+
+### [C1] 🟡 `SNAPSHOT:` marker 未实现（文档/代码不一致）
+- **文件:** `server/execution.ts`（executeTask 成功分支）、`server/snapshot.ts`、`CONTEXT.md §7`
+- **问题:** §7 定义了 `DECISION:` / `ARTIFACT:` / `SNAPSHOT:` 三个 marker；前两个已实现，**SNAPSHOT 未实现**。snapshot 的「一句话结果」取 `impl_summary` 首行（`firstLine`），而非 agent 自述的 SNAPSHOT 行。
+- **建议:** executeTask 解析 `SNAPSHOT:` 作为 `recordTaskComplete` 的 result，无则回退首行（现状）；或把文档改为「确定性派生」。
+- **状态:** 待改
+
+### [C2] 🟡 `story_snapshot.decisions[]` 死字段
+- **文件:** `server/snapshot.ts`（`SnapshotState.decisions`，注释 "Phase 2"）
+- **问题:** 定义但从未写入；`renderDecisionsBlock` 直接查 decisions 表。注释也不准确。
+- **建议:** 删除该字段并修正注释；若将来要「按任务 scope 决策」再引入。
+- **状态:** 待改
+
+### [C3] 🟡 设计阶段的 decision 未捕获
+- **文件:** `server/execution.ts`（executeDesign）、`server/designGuide.ts`
+- **问题:** `DECISION:` 仅在 executeTask 解析；design 阶段不解析，且 design 提示未要求输出 DECISION。设计期的关键决策会丢。
+- **建议:** design 提示加 DECISION 说明；executeDesign 解析 result 并 `recordDecisions`（createdBy='techlead'）。
+- **状态:** 待改
+
+### [C4] 🟢 `depends_on` 只存不执行
+- **文件:** `server/execution.ts`（executePipeline）
+- **问题:** Planner 现在会填真实 `depends_on`，但 pipeline 仍按 `seq` 串行，不校验依赖图（靠 planner 拓扑排序的约定）。
+- **建议:** 执行每个 task 前校验其 `depends_on` 全部 done（否则 block）；或做拓扑排序 + 受限并行。
+- **状态:** 待改（较大增量）
+
+### [C5] 🟢 FTS5 检索仅覆盖 context sections
+- **文件:** `server/db.ts`（`context_fts`）、`server/retrieval.ts`、`server/artifacts.ts`
+- **问题:** 设计 §9 说要索引 `project_contexts.content` + `artifacts.summary` + `decisions`；实际只索引了 `project_contexts`。artifact manifest 排序仍是朴素子串重叠。
+- **建议:** 扩展 FTS5（或单独表）覆盖 artifacts/decisions，manifest 用 bm25 排序。
+- **状态:** 待改（较大增量）
+
+### [C6] 🟡 Phase 6（State 可视化）无自动化测试
+- **文件:** `tests/`、`server/routes/stories.ts`、`src/pages/ProjectView.tsx`
+- **问题:** 3 个 GET 路由（`/snapshot`、`/decisions`、`/artifacts`）+ `getSnapshotView`/`listDecisions`/`listArtifacts` + Context tab 均无测试；已测的只是 `render*`。
+- **建议:** 加 route/getter 级测试（种子 story+task+decision+artifact，断言返回结构）；UI 测试可暂缓。
+- **状态:** 待改
+
+### [C7] 🟢 `context_token_budget` 未调优
+- **文件:** `server/runtimeConfig.ts`
+- **问题:** 默认 8000 是拍的数（设计 §12 Q4），未按真实跑量验证。
+- **状态:** 待观察
+
+> **刻意延后（非缺口）:** embeddings 检索（设计明确 "only if needed"）、`phase`/`design_output` 休眠列（SQLite 不便删列）、token 估算用 `chars/4`（设计 §6.3 已接受）。
+>
+> **建议批次:** 先做 C1 + C2 + C3 + C6（都是小改 + 消除文档/代码不一致）一个 PR；C4 / C5 看是否要真正 DAG 执行 / 更强检索再排期。
+
+---
+
 ## 🔴 ACTIVE — 自动执行链路（2026-06-06 实测）
 
 > 用 `npm run flow` 按生产路径（复刻 `orchestrator.dispatch` + `runWorker`）跑 happy flow，

@@ -246,6 +246,34 @@ export interface SystemEvent {
   created_at: string;
 }
 
+// Context/State views (CONTEXT.md §15)
+export interface StorySnapshotView {
+  goal: string | null;
+  completed: Array<{ seq: number; title: string; result: string }>;
+  inProgress: { seq: number; title: string } | null;
+  blocked: Array<{ seq: number; title: string }>;
+  artifacts: string[];
+}
+
+export interface Decision {
+  id: string;
+  seq: number;
+  topic: string;
+  decision: string;
+  rationale: string | null;
+  status: "active" | "superseded" | string;
+  created_at: string;
+}
+
+export interface Artifact {
+  id: string;
+  path: string;
+  kind: string;
+  summary: string | null;
+  status: string;
+  updated_at: string;
+}
+
 export interface ProjectContext {
   id: string;
   project_id: string;

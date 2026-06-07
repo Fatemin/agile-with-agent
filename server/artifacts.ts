@@ -120,3 +120,20 @@ export function renderArtifactManifest(storyId: string, scopePaths?: string[]): 
   if (overflow > 0) items.push(`- _(+${overflow} more)_`);
   return `## Artifacts (files this story has touched — read what you need)\n\n${items.join("\n")}`;
 }
+
+export interface ArtifactRow {
+  id: string;
+  path: string;
+  kind: string;
+  summary: string | null;
+  status: string;
+  updated_at: string;
+}
+
+/** Active artifacts for a story, for display (CONTEXT.md §15). */
+export function listArtifacts(storyId: string): ArtifactRow[] {
+  return db.prepare(`
+    SELECT id, path, kind, summary, status, updated_at FROM artifacts
+    WHERE story_id = ? AND status = 'active' ORDER BY kind, path
+  `).all(storyId) as unknown as ArtifactRow[];
+}

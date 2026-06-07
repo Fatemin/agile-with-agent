@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, AgentStory, Epic, Project, ProjectContext, Snapshot, Sprint, Story, StoryTask, SystemEvent } from "./types";
+import type { Agent, AgentRun, AgentStory, Artifact, Decision, Epic, Project, ProjectContext, Snapshot, Sprint, Story, StorySnapshotView, StoryTask, SystemEvent } from "./types";
 
 const BASE = "/api";
 
@@ -65,6 +65,10 @@ export const api = {
     update: (id: string, body: Partial<Story>) =>
       req<Story>(`/stories/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     delete: (id: string) => req<{ ok: boolean }>(`/stories/${id}`, { method: "DELETE" }),
+    // Context/State views (CONTEXT.md §15)
+    snapshot:  (id: string) => req<StorySnapshotView>(`/stories/${id}/snapshot`),
+    decisions: (id: string) => req<Decision[]>(`/stories/${id}/decisions`),
+    artifacts: (id: string) => req<Artifact[]>(`/stories/${id}/artifacts`),
   },
 
   agents: {

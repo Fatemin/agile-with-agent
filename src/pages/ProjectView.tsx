@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import {
-  Bot, Bug, CalendarDays, CheckCircle2, ClipboardCheck,
+  Bot, Brain, Bug, CalendarDays, CheckCircle2, ClipboardCheck,
   Copy, ExternalLink, FileText, FolderOpen, GitBranch,
   Layers, Lightbulb, ListTodo, MessageSquare, Network, Pencil, Play, Plus,
   Rocket, RotateCw, Save, ScanLine, Send, ShieldCheck, Sparkles,
@@ -1469,6 +1469,110 @@ function AddTaskDialog({ storyId, type, agents, nextSeq, onClose, onCreated }: {
   );
 }
 
+// ─── Context tab — the State an agent sees (CONTEXT.md §15) ───────────────────
+
+function StoryContextTab({ storyId }: { storyId: string }) {
+  const { data: snap } = useQuery({
+    queryKey: ["story-snapshot", storyId],
+    queryFn: () => api.stories.snapshot(storyId),
+  });
+  const { data: decisions = [] } = useQuery({
+    queryKey: ["story-decisions", storyId],
+    queryFn: () => api.stories.decisions(storyId),
+  });
+  const { data: artifacts = [] } = useQuery({
+    queryKey: ["story-artifacts", storyId],
+    queryFn: () => api.stories.artifacts(storyId),
+  });
+
+  const hasSnap = !!snap && (!!snap.goal || snap.completed.length > 0 || !!snap.inProgress || snap.blocked.length > 0);
+  const empty = !hasSnap && decisions.length === 0 && artifacts.length === 0;
+
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="text-xs text-content-tertiary">
+        The compact State an agent is given for this story — working memory, decisions, and artifacts —
+        rebuilt per task instead of replaying the full history (<span className="font-mono">CONTEXT.md</span>).
+      </p>
+
+      {empty && (
+        <div className="rounded-lg border border-dashed border-border p-4 text-xs text-content-tertiary text-center">
+          No context captured yet — it fills in as the story's tasks run.
+        </div>
+      )}
+
+      {/* Working memory (snapshot) */}
+      {hasSnap && snap && (
+        <div className="rounded-lg border border-border bg-surface-card p-3.5 flex flex-col gap-2.5">
+          <p className="text-[10px] font-mono font-semibold uppercase tracking-wider text-accent flex items-center gap-1.5">
+            <Brain size={10} />Working Memory
+          </p>
+          {snap.goal && (
+            <p className="text-sm text-content-primary"><span className="text-content-tertiary">Goal: </span>{snap.goal}</p>
+          )}
+          {snap.completed.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-content-tertiary">Done</span>
+              {snap.completed.map((c) => (
+                <div key={c.seq} className="text-xs text-content-secondary flex gap-2">
+                  <span className="font-mono text-content-tertiary shrink-0">#{c.seq}</span>
+                  <span className="font-medium shrink-0">{c.title}</span>
+                  <span className="text-content-tertiary truncate">— {c.result}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {snap.inProgress && (
+            <p className="text-xs text-content-secondary">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-content-tertiary">Now </span>
+              #{snap.inProgress.seq} {snap.inProgress.title}
+            </p>
+          )}
+          {snap.blocked.length > 0 && (
+            <p className="text-xs text-amber-600">Blocked: {snap.blocked.map((b) => `#${b.seq} ${b.title}`).join(", ")}</p>
+          )}
+        </div>
+      )}
+
+      {/* Decisions */}
+      {decisions.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface-card p-3.5 flex flex-col gap-2">
+          <p className="text-[10px] font-mono font-semibold uppercase tracking-wider text-accent flex items-center gap-1.5">
+            <Lightbulb size={10} />Decisions
+          </p>
+          {decisions.map((d) => (
+            <div key={d.id} className={cn("text-xs flex flex-col gap-0.5 border-l-2 pl-2", d.status === "superseded" ? "border-border opacity-50" : "border-accent/40")}>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-mono text-content-tertiary">#{d.seq}</span>
+                <span className="rounded bg-surface-secondary px-1.5 py-0.5 text-[9px] font-mono text-content-tertiary">{d.topic}</span>
+                {d.status === "superseded" && <span className="text-[9px] text-content-tertiary line-through">superseded</span>}
+                <span className="font-medium text-content-primary">{d.decision}</span>
+              </div>
+              {d.rationale && <span className="text-content-tertiary">{d.rationale}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Artifacts */}
+      {artifacts.length > 0 && (
+        <div className="rounded-lg border border-border bg-surface-card p-3.5 flex flex-col gap-1.5">
+          <p className="text-[10px] font-mono font-semibold uppercase tracking-wider text-accent flex items-center gap-1.5">
+            <FileText size={10} />Artifacts
+          </p>
+          {artifacts.map((a) => (
+            <div key={a.id} className="text-xs flex items-center gap-2">
+              <span className="rounded bg-surface-secondary px-1.5 py-0.5 text-[9px] font-mono text-content-tertiary shrink-0">{a.kind}</span>
+              <span className="font-mono text-content-secondary truncate">{a.path}</span>
+              {a.summary && <span className="text-content-tertiary truncate">— {a.summary}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Story Detail Dialog ──────────────────────────────────────────────────────
 
 function StoryDialog({ story, onClose, epics, agents, sprints, project }: {
@@ -1477,7 +1581,7 @@ function StoryDialog({ story, onClose, epics, agents, sprints, project }: {
   project: { definition_of_done: string | null };
 }) {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"story" | "tasks" | "qa" | "activity">("story");
+  const [tab, setTab] = useState<"story" | "tasks" | "context" | "qa" | "activity">("story");
   const [reportingDefect, setReportingDefect] = useState(false);
 
   const { data: existingTasks = [] } = useQuery({
@@ -1505,6 +1609,7 @@ function StoryDialog({ story, onClose, epics, agents, sprints, project }: {
   const TABS = [
     { id: "story",    label: "Story",    icon: FileText },
     { id: "tasks",    label: "Tasks",    icon: Network },
+    { id: "context",  label: "Context",  icon: Layers },
     { id: "qa",       label: "QA",       icon: ShieldCheck },
     { id: "activity", label: "Activity", icon: MessageSquare },
   ] as const;
@@ -1702,6 +1807,9 @@ function StoryDialog({ story, onClose, epics, agents, sprints, project }: {
                 }}
               />
             )}
+
+            {/* ── Context tab — the State the agent sees (CONTEXT.md §15) ── */}
+            {tab === "context" && <StoryContextTab storyId={story.id} />}
 
             {/* ── Activity tab ── */}
             {tab === "activity" && (

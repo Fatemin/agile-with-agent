@@ -93,11 +93,22 @@ export function recordTaskComplete(
  * Bounded by construction: completed is capped (with an overflow note),
  * each result/title is truncated, artifacts are capped.
  */
-export function renderSnapshotBlock(storyId: string): string | null {
+export interface SnapshotView {
+  goal: string | null;
+  completed: SnapshotCompleted[];
+  inProgress: { seq: number; title: string } | null;
+  blocked: Array<{ seq: number; title: string }>;
+  artifacts: string[];
+}
+
+/**
+ * Structured snapshot for display (CONTEXT.md §15). Same data renderSnapshotBlock
+ * uses, exposed for the API / UI. in_progress and blocked are derived live from
+ * story_tasks; completed is backfilled from done tasks for pre-snapshot stories.
+ */
+export function getSnapshotView(storyId: string): SnapshotView {
   const { goal, state } = readState(storyId);
 
-  // Lazy backfill for stories created before snapshots existed (CONTEXT.md §12.5):
-  // derive completed from done tasks when nothing has been recorded yet.
   let completed = state.completed;
   if (completed.length === 0) {
     const done = db.prepare(
@@ -105,8 +116,6 @@ export function renderSnapshotBlock(storyId: string): string | null {
     ).all(storyId) as Array<{ seq: number; title: string; impl_summary: string | null }>;
     completed = done.map((d) => ({ seq: d.seq, title: d.title, result: firstLine(d.impl_summary) || "done" }));
   }
-
-  // Derived live from the task table — never persisted.
   const inProgress = db.prepare(
     "SELECT seq, title FROM story_tasks WHERE story_id = ? AND status = 'in_progress' ORDER BY seq ASC LIMIT 1",
   ).get(storyId) as { seq: number; title: string } | undefined;
@@ -114,16 +123,21 @@ export function renderSnapshotBlock(storyId: string): string | null {
     "SELECT seq, title FROM story_tasks WHERE story_id = ? AND status IN ('blocked','failed') ORDER BY seq ASC",
   ).all(storyId) as Array<{ seq: number; title: string }>;
 
-  if (!goal && completed.length === 0 && !inProgress && blocked.length === 0 && state.artifacts.length === 0) {
+  return { goal, completed, inProgress: inProgress ?? null, blocked, artifacts: state.artifacts };
+}
+
+export function renderSnapshotBlock(storyId: string): string | null {
+  const v = getSnapshotView(storyId);
+  if (!v.goal && v.completed.length === 0 && !v.inProgress && v.blocked.length === 0 && v.artifacts.length === 0) {
     return null;
   }
 
   const lines: string[] = ["## Story Snapshot\n"];
-  if (goal) lines.push(`**Goal:** ${goal}`);
+  if (v.goal) lines.push(`**Goal:** ${v.goal}`);
 
-  if (completed.length > 0) {
-    const shown = completed.slice(-MAX_COMPLETED_SHOWN);
-    const overflow = completed.length - shown.length;
+  if (v.completed.length > 0) {
+    const shown = v.completed.slice(-MAX_COMPLETED_SHOWN);
+    const overflow = v.completed.length - shown.length;
     const items = shown.map((c) => `- #${c.seq} ${c.title} — ${c.result}`);
     if (overflow > 0) items.unshift(`- _(+${overflow} earlier task${overflow > 1 ? "s" : ""} done)_`);
     lines.push(`**Done:**\n${items.join("\n")}`);
@@ -131,9 +145,9 @@ export function renderSnapshotBlock(storyId: string): string | null {
     lines.push("**Done:** _(nothing yet)_");
   }
 
-  if (inProgress) lines.push(`**Now:** #${inProgress.seq} ${inProgress.title}`);
-  if (blocked.length > 0) lines.push(`**Blocked:** ${blocked.map((b) => `#${b.seq} ${b.title}`).join(", ")}`);
-  if (state.artifacts.length > 0) lines.push(`**Key files:** ${state.artifacts.slice(0, MAX_ARTIFACTS).join(", ")}`);
+  if (v.inProgress) lines.push(`**Now:** #${v.inProgress.seq} ${v.inProgress.title}`);
+  if (v.blocked.length > 0) lines.push(`**Blocked:** ${v.blocked.map((b) => `#${b.seq} ${b.title}`).join(", ")}`);
+  if (v.artifacts.length > 0) lines.push(`**Key files:** ${v.artifacts.slice(0, MAX_ARTIFACTS).join(", ")}`);
 
   return lines.join("\n\n");
 }

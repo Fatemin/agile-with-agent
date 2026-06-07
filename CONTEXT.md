@@ -1,6 +1,6 @@
 # Context & State Management Specification
 
-Status: Draft v1 — **Phases 1–5 implemented** (snapshot, decisions, artifacts+budget, planner, FTS5 retrieval). Spec realized.
+Status: Draft v1 — **Phases 1–5 implemented** (snapshot, decisions, artifacts+budget, planner, FTS5 retrieval); **Phase 6** surfaces this State in the UI. Spec realized.
 
 Purpose: Define how this system assembles the context a coding agent sees for a unit of work,
 so that **prompt size stays roughly constant as a story grows**, decisions are not lost, and a new
@@ -451,3 +451,23 @@ So it's clear what's load-bearing and good:
   `selectContextSections` stays — Phase 1 only swaps the prior-task block for the snapshot block.
 - **Phase 3** retires the static-rules selection + its Settings UI (14.A row 4).
 - **Phase 4** demotes `inferTasks` to fallback (14.A row 5).
+
+---
+
+## 15. Phase 6 — Surfacing State to humans ✅
+
+Phases 1–5 are entirely server-side: they build the State an *agent* sees. Phase 6 makes that same
+State visible to *people* — the read side of the redesign. It adds no new state; it exposes what's
+already captured.
+
+- **Read-only API** (CONTEXT.md views), in [server/routes/stories.ts](server/routes/stories.ts):
+  - `GET /api/stories/:id/snapshot` → working memory (`getSnapshotView`, [server/snapshot.ts](server/snapshot.ts))
+  - `GET /api/stories/:id/decisions` → decision log incl. superseded (`listDecisions`, [server/decisions.ts](server/decisions.ts))
+  - `GET /api/stories/:id/artifacts` → artifact manifest (`listArtifacts`, [server/artifacts.ts](server/artifacts.ts))
+- **UI:** a **Context** tab on the story detail ([src/pages/ProjectView.tsx](src/pages/ProjectView.tsx) →
+  `StoryContextTab`) showing three cards — Working Memory (goal / done / now / blocked), Decisions
+  (superseded dimmed), Artifacts (by kind). Auto-refreshes on the app's global poll.
+
+Note: this phase is outside the original §1–§13 spec (which is the *agent* context pipeline). It was
+added because the captured State had no human-facing view. It is purely additive (new GET routes +
+one tab); no agent-path behavior changed.

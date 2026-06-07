@@ -4,6 +4,9 @@ import { db, type SqlParam } from "../db.js";
 import { orchestrator } from "../orchestrator.js";
 import { buildBranchName, createBranchNoCheckout } from "../git.js";
 import { log } from "../logger.js";
+import { getSnapshotView } from "../snapshot.js";
+import { listDecisions } from "../decisions.js";
+import { listArtifacts } from "../artifacts.js";
 
 export const storiesRouter = new Hono();
 
@@ -275,6 +278,11 @@ storiesRouter.delete("/:id", (c) => {
   db.prepare("DELETE FROM stories WHERE id = ?").run(c.req.param("id"));
   return c.json({ ok: true });
 });
+
+// Context/State views (CONTEXT.md §15) — working memory, decisions, artifacts.
+storiesRouter.get("/:id/snapshot",  (c) => c.json(getSnapshotView(c.req.param("id"))));
+storiesRouter.get("/:id/decisions", (c) => c.json(listDecisions(c.req.param("id"))));
+storiesRouter.get("/:id/artifacts", (c) => c.json(listArtifacts(c.req.param("id"))));
 
 storiesRouter.post("/:id/report-bug", async (c) => {
   const parentId = c.req.param("id");

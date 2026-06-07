@@ -106,3 +106,25 @@ export function renderDecisionsBlock(storyId: string): string | null {
   if (overflow > 0) items.unshift(`- _(+${overflow} earlier decision${overflow > 1 ? "s" : ""})_`);
   return `## Decisions (already made — follow these)\n\n${items.join("\n")}`;
 }
+
+export interface DecisionRow {
+  id: string;
+  seq: number;
+  topic: string;
+  decision: string;
+  rationale: string | null;
+  status: string;
+  created_at: string;
+}
+
+/** All decisions for a story (active + superseded), for display (CONTEXT.md §15). */
+export function listDecisions(storyId: string): DecisionRow[] {
+  const story = db.prepare("SELECT project_id FROM stories WHERE id = ?").get(storyId) as
+    { project_id: string } | undefined;
+  if (!story) return [];
+  return db.prepare(`
+    SELECT id, seq, topic, decision, rationale, status, created_at FROM decisions
+    WHERE project_id = ? AND (story_id = ? OR story_id IS NULL)
+    ORDER BY seq ASC
+  `).all(story.project_id, storyId) as unknown as DecisionRow[];
+}

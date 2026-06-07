@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { STORY_STATUS } from "@/lib/storyStatus";
 import type {
   Agent, AgentRun, DefectSeverity, Epic, Priority,
   ProjectContext, Sprint, Story, StoryMode, StoryStatus, StoryType,
@@ -44,23 +45,14 @@ const TYPE_COLORS: Record<StoryType, string> = {
   story: "#06b6d4", bug: "#EF4444", task: "#8B5CF6", spike: "#F59E0B",
 };
 
-const BOARD_COLUMNS: { status: StoryStatus; label: string; icon: React.ElementType; color: string }[] = [
-  { status: "todo",          label: "Todo",          icon: ListTodo,       color: "#71717A" },
-  { status: "design_review", label: "Design Review", icon: ClipboardCheck, color: "#8B5CF6" },
-  { status: "in_progress",   label: "In Progress",   icon: GitBranch,      color: "#0891B2" },
-  { status: "human_review",  label: "Human Review",  icon: ShieldCheck,    color: "#F59E0B" },
-  { status: "done",          label: "Done",          icon: CheckCircle2,   color: "#22C55E" },
-];
+// Board columns are an ordered subset of statuses; all visual meta comes from
+// the shared STORY_STATUS source so the board, cards, Dashboard and Agents agree.
+const BOARD_COLUMN_ORDER: StoryStatus[] = ["todo", "design_review", "in_progress", "human_review", "done"];
+const BOARD_COLUMNS = BOARD_COLUMN_ORDER.map((status) => ({ status, ...STORY_STATUS[status] }));
 
-const STATUS_LABELS: Record<StoryStatus, string> = {
-  backlog:       "Backlog",
-  todo:          "Todo",
-  design_review: "Design Review",
-  in_progress:   "In Progress",
-  human_review:  "Human Review",
-  done:          "Done",
-  cancelled:     "Cancelled",
-};
+const STATUS_LABELS = Object.fromEntries(
+  (Object.keys(STORY_STATUS) as StoryStatus[]).map((s) => [s, STORY_STATUS[s].label]),
+) as Record<StoryStatus, string>;
 
 // Statuses that represent "active" work (for the dispatch board / running indicator)
 const ACTIVE_STATUSES: StoryStatus[] = ["in_progress"];
@@ -433,21 +425,45 @@ function StoryCard({ story, onClick }: { story: Story; onClick: () => void }) {
           </div>
         )}
       </div>
+
+      {/* At-a-glance progress: design gate, task completion, defects, QA verdict */}
+      {(story.status === "design_review" || (story.task_total ?? 0) > 0 || (story.defect_count ?? 0) > 0 || story.qa_result) && (
+        <div className="mt-1.5 pl-5 flex items-center gap-2 flex-wrap">
+          {story.status === "design_review" && (
+            <span className="inline-flex items-center gap-0.5 font-mono text-[9px] text-violet-700 bg-violet-50 border border-violet-200 rounded px-1 py-0.5">
+              <ClipboardCheck size={8} />needs review
+            </span>
+          )}
+          {(story.task_total ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 font-mono text-[9px] text-content-tertiary" title="tasks done / total">
+              <span className="text-content-secondary">{story.task_done ?? 0}/{story.task_total}</span>
+              <span className="inline-block h-1 w-8 rounded-full bg-surface-tertiary overflow-hidden">
+                <span className="block h-full bg-accent" style={{ width: `${Math.round(((story.task_done ?? 0) / (story.task_total || 1)) * 100)}%` }} />
+              </span>
+            </span>
+          )}
+          {(story.defect_count ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-0.5 font-mono text-[9px] text-red-600" title="open defects">
+              <Bug size={8} />{story.defect_count}
+            </span>
+          )}
+          {story.qa_result && (
+            <span className={cn("inline-flex items-center font-mono text-[9px] rounded px-1 py-0.5 border",
+              story.qa_result === "pass" ? "text-green-700 bg-green-50 border-green-200" : "text-red-700 bg-red-50 border-red-200")}>
+              QA {story.qa_result}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Story Row (Backlog list view) ────────────────────────────────────────────
 
-const STATUS_BADGE: Record<StoryStatus, string> = {
-  backlog:       "bg-surface-tertiary text-content-tertiary",
-  todo:          "bg-surface-tertiary text-content-secondary",
-  design_review: "bg-violet-50 text-violet-700 border border-violet-200",
-  in_progress:   "bg-cyan-50 text-cyan-700 border border-cyan-200",
-  human_review:  "bg-amber-50 text-amber-700 border border-amber-200",
-  done:          "bg-green-50 text-green-700 border border-green-200",
-  cancelled:     "bg-red-50 text-red-700 border border-red-200",
-};
+const STATUS_BADGE = Object.fromEntries(
+  (Object.keys(STORY_STATUS) as StoryStatus[]).map((s) => [s, STORY_STATUS[s].badge]),
+) as Record<StoryStatus, string>;
 
 function StoryRow({ story, sprints, onClick, onSprintChange }: {
   story: Story; sprints: Sprint[]; onClick: () => void;
@@ -1271,15 +1287,7 @@ function TaskCard({ task, storyKey, agents, isExpanded, rerunning, onToggle, onU
             </>
           )}
 
-          {/* Output: design + impl summary */}
-          {task.design_output && (
-            <div className="flex flex-col gap-1">
-              <span className="text-[9px] font-mono uppercase tracking-wider text-amber-600">Design output</span>
-              <pre className="text-[10px] text-content-secondary whitespace-pre-wrap font-mono bg-surface-tertiary rounded p-2 max-h-32 overflow-y-auto">
-                {task.design_output}
-              </pre>
-            </div>
-          )}
+          {/* Output: implementation summary */}
           {task.impl_summary && (
             <div className="flex flex-col gap-1">
               <span className="text-[9px] font-mono uppercase tracking-wider text-green-600">Implementation output</span>

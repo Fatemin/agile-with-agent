@@ -10,7 +10,10 @@ export const storiesRouter = new Hono();
 const STORY_JOIN = `
   SELECT s.*, a.name as agent_name, a.provider as agent_provider,
          e.title as epic_title, e.color as epic_color,
-         sp.name as sprint_name
+         sp.name as sprint_name,
+         (SELECT COUNT(*) FROM story_tasks t WHERE t.story_id = s.id) AS task_total,
+         (SELECT COUNT(*) FROM story_tasks t WHERE t.story_id = s.id AND t.status = 'done') AS task_done,
+         (SELECT COUNT(*) FROM story_tasks t WHERE t.story_id = s.id AND t.type = 'defect') AS defect_count
   FROM stories s
   LEFT JOIN agents a ON s.assigned_agent_id = a.id
   LEFT JOIN epics e ON s.epic_id = e.id
@@ -131,7 +134,7 @@ storiesRouter.patch("/:id", async (c) => {
     "branch_name", "pr_url", "pr_number",
     "qa_test_cases", "qa_notes", "qa_signed_off_by", "qa_signed_off_at", "staging_url",
     "deploy_env", "deploy_url", "commit_hash", "deployed_at",
-    "qa_result", "parent_story_id", "mode",
+    "qa_result", "parent_story_id", "mode", "design",
   ];
 
   const prev = db.prepare(`

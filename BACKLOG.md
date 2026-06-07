@@ -29,6 +29,51 @@
 - **状态:** ✅ 已修复（2026-06-06）
 - **注:** auto 模式下若 QA 持续失败，编排器会反复重试该 story（与任何失败任务一致的既有行为）；这属于"失败任务重试策略"的更大话题，未在本次处理。
 
+### [A4] 🔴 "无限调用"止血：重试策略 + 单次 run 轮数上限 → ✅ 已实现
+- **背景:** story `1-2`（一个改 3 行的需求）实测烧了 10 次 run、~$3.4——根因是 ① auto 模式撞到 `session limit` 仍盲目重试 ②单次 run 跑到 48 turn。
+- **文件:** `server/orchestrator.ts`、`server/runtimeConfig.ts`、`server/claudeRunner.ts`、`server/execution.ts`
+- **实现:**
+  - **不可重试错误分类**（`NON_RETRYABLE`：session/quota/auth/permission/approval）→ 立即放弃，不再重试。
+  - **`max_attempts`（默认 3）** → 超过后放弃，把 story 翻成 `mode='manual'`（持久，poll 与重启恢复都只挑 `auto`，从此不再自动重投）并记一条醒目日志。
+  - **`max_turns`（默认 50）** → 通过 CLI `--max-turns` 封顶单次 run 的内层轮数。
+- **验证:** `tests/orchestrator-giveup.test.ts`（绿）：撞 `session limit` 后 story 翻 manual、不再有 running/retry、run 数 ≤ 2。既有 retry 用例仍绿（可重试错误照常重试到成功）。
+- **状态:** ✅ 已实现（2026-06-06）。**注:** 权限模式仍是设计决策（见 README 已知限制），fully-autonomous 需自行评估 `bypassPermissions`。
+
+### [A6] 🟢 设计闸口（design 先行，人类 review）+ 默认 bypassPermissions → ✅ 已实现
+- **背景:** headless 一次性执行没有人在 CLI 前回答"是否允许跑这条命令",`acceptEdits` 会卡死。结论:逐条命令审批做不到,应把"人来决定"放到应用层闸口。
+- **文件:** `server/runtimeConfig.ts`、`server/execution.ts`、`server/db.ts`、`server/routes/stories.ts`、`src/types.ts`、`src/pages/ProjectView.tsx`、`src/pages/Agents.tsx`
+- **实现:**
+  - 默认 `permission_mode='bypassPermissions'`（隔离 worktree 内放开;人控放到闸口）。
+  - 新 story 状态 **`design_review`** + `stories.design` 字段。`require_design_review`（默认 true）。
+  - **`executeDesign`**:techlead agent 先探索代码、产出实现计划（read-only,fallback 用任务分解合成）+ 创建任务分解 → story 停在 `design_review`。
+  - `executeStory` 闸口:无 design → 走设计并 park;design 已批 → 实现。orchestrator 天然不动 `design_review`（非 active）。
+  - UI:看板新增 Design Review 列 + story 详情"Design Review"面板（Approve & Implement / Redesign）。
+- **验证:** `tests/execution-chain.test.ts → "design gate"`（绿）：pass1 → design_review + design 写入 + 任务未跑;批准后 pass2 → human_review。`npm run flow` 完整演示 design→批准→实现→human_review。
+- **状态:** ✅ 已实现（2026-06-06）。**注:** bypass 是设计取舍（见 README 已知限制）。
+
+### [A8] 🟢 状态/进展不够直观 → ✅ 卡片 + Dashboard 改造
+- **范围:** 按用户要求"大结构不动,主要改卡片显示 + 升级 Dashboard"。
+- **文件:** `src/lib/storyStatus.ts`(新,状态视觉单一来源)、`src/pages/ProjectView.tsx`(卡片)、`src/pages/Dashboard.tsx`、`src/pages/Agents.tsx`、`server/routes/stories.ts`(聚合)、`src/types.ts`。
+- **实现:**
+  - **看板卡片**新增一眼可见信息:任务进度(`task_done/task_total` + 进度条)、defect 数(🐛)、QA 结果(pass/fail 彩色 chip)、`design_review` 的"needs review"提示。数据来自 stories 查询新增的 `task_total/task_done/defect_count` 聚合(避免 N+1)。
+  - **Dashboard 升级为指挥中心**:`Now Running`(来自 orchestrator snapshot,显示实时轮数/token/已运行时长,带脉冲)+ `Awaiting You`(design_review/human_review 行动队列)+ 修掉过期的 `in_dev/in_qa` 样式。
+  - **状态视觉统一**:`STORY_STATUS` 单一来源(label/icon/color/badge),ProjectView/Dashboard/Agents 全部改为引用,消除 3 处重复 + 过期定义。
+- **验证:** `npm run lint` 通过;`npm test` 14/14;dev server(--watch)已热加载,可直接在页面查看。
+- **状态:** ✅ 已实现（2026-06-06）
+
+### [A7] 🟢 设计输出可读性差 → ✅ 加统一"设计指南"skill
+- **文件:** `server/designGuide.ts`（单一来源）、`server/execution.ts`（executeDesign 注入）
+- **问题:** agent 产出的 design 是一大坨无结构文本，难读；且未按 story 语言输出。
+- **实现:** `buildDesignPrompt()` 规定固定结构（Summary / Affected files / Approach / Data·API changes / Risks / AC check）+ 可读性与准确性规则（用标题/要点/`code` 跨度、只引用真实文件、不编造）；`detectStoryLanguage()` 按 story 文本自动选中文/英文，并要求 agent 全程匹配 story 语言（含标题）。所有 design 运行统一走它。
+- **验证:** `tests/execution-chain.test.ts → "design guide"`（绿）：中/英/混合语言检测 + 结构段落 + 保留 "Design Phase" 标记。
+- **状态:** ✅ 已实现（2026-06-06）。**注:** 仅影响**新的** design 运行；旧 story 可点「Redesign」用新格式重出。
+
+### [A5] 🟢 页面不实时（要刷新才看到变动）→ ✅ 已修复
+- **文件:** `src/App.tsx`
+- **问题:** QueryClient 只设了 `staleTime`，无轮询，agent 执行时看板/详情/活动不刷新就不更新。
+- **修复:** 全局 `refetchInterval: 4s` + `refetchOnWindowFocus` + 后台标签页暂停轮询。变动 ~4s 内自动出现，无需手动刷新。
+- **状态:** ✅ 已修复（2026-06-06）
+
 ### [A3] `inferTasks` 跨栈拆分死代码 → ✅ 已修复
 - **文件:** `server/execution.ts → inferTasks()`
 - **曾经问题:** `else if (isCrossStack)`（本应拆出 backend+frontend 两个 impl 任务）永不触发——所有 cross-stack 关键字也命中前/后端集合，`role` 绝不会是 `fullstack`，走不到该分支。实际每个 story 永远只产出 1 impl + 1 QA。

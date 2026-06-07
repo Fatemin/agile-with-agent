@@ -24,6 +24,7 @@ function configure(workspaceRoot: string): void {
     wip_limit: 2,
     stall_timeout_ms: 0,       // disable stall detection for the test
     timeout_minutes: 1,
+    require_design_review: false, // this test exercises the autonomous impl path
   }));
 }
 

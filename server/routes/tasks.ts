@@ -86,7 +86,7 @@ tasksRouter.patch("/:storyId/tasks/:taskId", async (c) => {
 
   const allowed = [
     "title", "description", "acceptance_criteria", "role", "agent_id",
-    "scope_paths", "depends_on", "seq", "phase", "status",
+    "scope_paths", "depends_on", "seq", "status",
     "type", "estimate_hours", "logged_hours", "severity",
     "steps_to_repro", "expected", "actual", "found_during", "linked_task_id",
   ] as const;

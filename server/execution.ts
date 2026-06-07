@@ -1,7 +1,13 @@
 import { db } from "./db.js";
 import { log } from "./logger.js";
 import { nanoid } from "nanoid";
-import { buildTaskPromptBlocks, type PriorTaskContext } from "./contextBuilder.js";
+import { buildTaskPromptBlocks } from "./contextBuilder.js";
+import { buildDesignPrompt } from "./designGuide.js";
+import { setStoryGoal, recordTaskComplete } from "./snapshot.js";
+import { parseDecisionMarkers, recordDecisions } from "./decisions.js";
+import { parseTaskPlan, stripTaskPlanJson, type TaskPlan } from "./planner.js";
+import { parseArtifactMarkers, registerArtifacts } from "./artifacts.js";
+import { headRef, changedFilesSince } from "./git.js";
 import { runClaudeCode, recordAgentRun, type RunResult } from "./claudeRunner.js";
 
 /**
@@ -123,6 +129,7 @@ type StoryRow = {
   branch_name: string | null;
   epic_id: string | null;
   sprint_id: string | null;
+  design: string | null;
 };
 
 type AgentRow = {
@@ -142,6 +149,7 @@ type TaskRow = {
   estimate_hours: number | null;
   role: string;
   agent_id: string | null;
+  scope_paths: string;   // JSON string
   status: string;
   phase: string;
 };
@@ -171,7 +179,7 @@ export function getEnv(key: string): string | undefined {
 
 function getStory(storyId: string): StoryRow | undefined {
   return db.prepare(
-    "SELECT id, key, title, type, status, mode, project_id, assigned_agent_id, branch_name, epic_id, sprint_id FROM stories WHERE id = ?"
+    "SELECT id, key, title, type, status, mode, project_id, assigned_agent_id, branch_name, epic_id, sprint_id, design FROM stories WHERE id = ?"
   ).get(storyId) as StoryRow | undefined;
 }
 
@@ -365,6 +373,7 @@ function createPipelineTasks(story: StoryRow): number {
   const existing = listStoryTasks(story.id);
   if (existing.length > 0) return existing.length;
 
+  setStoryGoal(story.id, story.title);
   const tasks = inferTasks(story);
   for (const task of tasks) {
     const match = findIdleAgentWithFallback(task.role);
@@ -396,6 +405,74 @@ function createPipelineTasks(story: StoryRow): number {
   db.prepare("UPDATE stories SET pipeline_mode = 1, updated_at = datetime('now') WHERE id = ?").run(story.id);
   log(story.id, "execution_complete",
     `Pipeline planned: ${tasks.length} task(s)\n${tasks.map((t) => `  #${t.seq} ${t.title} [${t.role}]`).join("\n")}`,
+    "agent"
+  );
+  return tasks.length;
+}
+
+/**
+ * Create the task breakdown from an LLM-produced task graph (CONTEXT.md §8).
+ * Populates real scope_paths + depends_on. Guarantees a final QA gate. Falls
+ * back to the heuristic createPipelineTasks when no valid plan was parsed.
+ */
+function createTasksFromPlan(story: StoryRow, plan: TaskPlan): number {
+  const existing = listStoryTasks(story.id);
+  if (existing.length > 0) return existing.length;
+
+  setStoryGoal(story.id, plan.goal || story.title);
+
+  const tasks = [...plan.tasks];
+  // The pipeline always ends on a QA gate — append one if the planner omitted it.
+  if (!tasks.some((t) => t.role === "qa")) {
+    tasks.push({
+      seq: tasks.length + 1,
+      role: "qa",
+      title: "QA verification",
+      description:
+        "Validate the story end-to-end against its acceptance criteria. " +
+        "Test the happy path, edge cases, and visible regressions. File defects for any deviations.",
+      acceptance_criteria: buildAC([
+        "All story acceptance criteria checked",
+        "No new regressions in adjacent features",
+        "Manual smoke test in a real environment",
+        "Defects filed for any issues found",
+      ]),
+      scope_paths: [],
+      depends_on: tasks.map((t) => t.seq), // gate after every implementation task
+    });
+  }
+
+  for (const task of tasks) {
+    const match = findIdleAgentWithFallback(task.role);
+    db.prepare(
+      `INSERT INTO story_tasks (id, story_id, seq, type, title, description, acceptance_criteria, estimate_hours,
+                                role, agent_id, scope_paths, depends_on, status)
+       VALUES (?, ?, ?, 'subtask', ?, ?, ?, ?, ?, ?, ?, ?, 'todo')`
+    ).run(
+      nanoid(), story.id, task.seq, task.title,
+      task.description || null, task.acceptance_criteria || null, null,
+      task.role, match?.agent.id ?? null,
+      JSON.stringify(task.scope_paths),
+      JSON.stringify(task.depends_on),
+    );
+    const scopeNote = task.scope_paths.length ? ` · ${task.scope_paths.length} file(s)` : "";
+    if (match) {
+      const fallbackNote = match.usedRole !== task.role ? ` (fallback from ${task.role} → ${match.usedRole})` : "";
+      log(story.id, "task_created",
+        `Task #${task.seq} created: **${task.title}** [${task.role}]${scopeNote} → ${match.agent.name}${fallbackNote}`,
+        "system", match.usedRole === task.role ? "info" : "warn"
+      );
+    } else {
+      log(story.id, "task_created",
+        `Task #${task.seq} created: **${task.title}** [${task.role}]${scopeNote} — no agent available (will fail when executed)`,
+        "system", "warn"
+      );
+    }
+  }
+
+  db.prepare("UPDATE stories SET pipeline_mode = 1, updated_at = datetime('now') WHERE id = ?").run(story.id);
+  log(story.id, "execution_complete",
+    `Pipeline planned by tech-lead agent: ${tasks.length} task(s)\n${tasks.map((t) => `  #${t.seq} ${t.title} [${t.role}]`).join("\n")}`,
     "agent"
   );
   return tasks.length;
@@ -453,7 +530,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
 
   // No agent available → mark task failed, do not fake completion
   if (!task.agent_id) {
-    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE story_tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
     const msg = `Task #${task.seq} **${task.title}** cannot run: no available ${task.role} agent (and no fallback)`;
     log(storyId, "execution_error", msg, "system", "error");
     yield { type: "error", content: msg };
@@ -464,7 +541,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
     { id: string; name: string; role: string | null; provider: string; system_prompt: string | null; model: string | null } | undefined;
 
   if (!agent) {
-    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE story_tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
     log(storyId, "execution_error", `Task #${task.seq}: agent record missing`, "system", "error");
     yield { type: "error", content: "Agent record missing" };
     return;
@@ -492,21 +569,21 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
   // never the main project directory.
   const ws = await resolveStoryWorkspace(storyId);
   if (!ws.path) {
-    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE story_tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
     log(storyId, "execution_error", `Task #${task.seq}: workspace setup failed — ${ws.error}`, "system", "error");
     yield { type: "error", content: `Workspace setup failed: ${ws.error}` };
     return;
   }
   const projectPath = ws.path;
 
-  // Build prompt — include prior completed tasks for handoff context
-  const priorTasks = db.prepare(
-    `SELECT seq, title, role, design_output, impl_summary
-     FROM story_tasks
-     WHERE story_id = ? AND seq < ? AND status = 'done'
-     ORDER BY seq ASC`
-  ).all(storyId, task.seq) as unknown as PriorTaskContext[];
+  // Scope of this task (for artifact ranking) + the commit to diff against
+  // afterwards so we can register what the task changed (CONTEXT.md §7).
+  let scopePaths: string[] = [];
+  try { const p = JSON.parse(task.scope_paths || "[]"); if (Array.isArray(p)) scopePaths = p.filter((x): x is string => typeof x === "string"); } catch { /* ignore */ }
+  const headBefore = headRef(projectPath);
 
+  // Build prompt — prior-task handoff comes from the story snapshot (working
+  // memory), assembled inside buildTaskPromptBlocks, not concatenated here.
   const role = (agent.role ?? task.role) as Parameters<typeof buildTaskPromptBlocks>[0]["agentRole"];
   const blocks = buildTaskPromptBlocks({
     storyId,
@@ -517,13 +594,12 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
       `Use your tools (Read, Write, Edit, Bash, Grep) to complete the task in the project directory. ` +
       `Follow existing conventions. End your turn with a one-paragraph summary of what you changed.`,
     agentRole: role,
-    phase: "implement",
-    priorTasks,
+    scopePaths,
   });
 
   const userPrompt = [blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
 
-  db.prepare("UPDATE story_tasks SET status = 'in_progress', phase = 'implementing', updated_at = datetime('now') WHERE id = ?").run(taskId);
+  db.prepare("UPDATE story_tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?").run(taskId);
   log(storyId, "task_start",
     `▶ Task #${task.seq} → spawning **${agent.name}** [${agent.role ?? "?"}] · ${config.model} · cwd: ${projectPath}`,
     "system"
@@ -533,7 +609,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
   // before_run hook (§9.4)
   const beforeHook = await runBeforeHook(storyId, projectPath);
   if (!beforeHook.ok) {
-    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE story_tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
     yield { type: "error", content: `before_run hook failed: ${beforeHook.error}` };
     return;
   }
@@ -547,6 +623,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
     permissionMode: config.permission_mode,
     cliPath: config.cli_path,
     timeoutMs: config.timeout_minutes * 60 * 1000,
+    maxTurns: config.max_turns,
     signal: opts?.signal,
   }, resultRef);
 
@@ -555,7 +632,7 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
 
   const result = resultRef.current;
   if (!result) {
-    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
+    db.prepare("UPDATE story_tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(taskId);
     log(storyId, "execution_error", `Task #${task.seq} failed: runner returned no result`, "system", "error");
     yield { type: "error", content: "Runner returned no result" };
     return;
@@ -568,15 +645,34 @@ export async function* executeTask(storyId: string, taskId: string, opts?: RunOp
 
   if (result.ok) {
     const summary = (result.result || "(no summary returned)").slice(0, 8000);
-    db.prepare("UPDATE story_tasks SET status = 'done', phase = 'done', impl_summary = ?, updated_at = datetime('now') WHERE id = ?")
+    db.prepare("UPDATE story_tasks SET status = 'done', impl_summary = ?, updated_at = datetime('now') WHERE id = ?")
       .run(summary, taskId);
+    // Register artifacts the task touched: files git reports changed since we
+    // started, plus any ARTIFACT: markers (which override kind/summary) — CONTEXT.md §7.
+    const changed = changedFilesSince(projectPath, headBefore).slice(0, 50);
+    const artifactMarkers = parseArtifactMarkers(result.result);
+    if (changed.length > 0 || artifactMarkers.length > 0) {
+      const n = registerArtifacts({ projectId: story.project_id, storyId, taskId, fromGit: changed, markers: artifactMarkers });
+      if (n > 0) log(storyId, "artifact", `Registered ${n} artifact(s) for task #${task.seq}`, "system", "debug");
+    }
+    // Record into working memory (CONTEXT.md §7) so later tasks see a compact
+    // one-line result + key files instead of the full summary being re-injected.
+    recordTaskComplete(storyId, { seq: task.seq, title: task.title, result: summary, artifacts: changed.slice(0, 12) });
+    // Extract any DECISION markers into the decision log (CONTEXT.md §7).
+    const decisions = parseDecisionMarkers(result.result);
+    if (decisions.length > 0) {
+      const seqs = recordDecisions({ projectId: story.project_id, storyId, decisions });
+      log(storyId, "decision",
+        `Recorded ${seqs.length} decision(s): ${seqs.map((s, i) => `#${s} [${decisions[i].topic}]`).join(", ")}`,
+        "agent");
+    }
     log(storyId, "execution_complete",
       `✓ Task #${task.seq} complete · ${result.tokensIn}+${result.tokensOut} tok · ${result.turns}t · ${(result.durationMs/1000).toFixed(1)}s${result.costUsd ? ` · $${result.costUsd.toFixed(4)}` : ""}`,
       "agent"
     );
     yield { type: "progress", content: `Completed ${task.title}` };
   } else {
-    db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', impl_summary = ?, updated_at = datetime('now') WHERE id = ?")
+    db.prepare("UPDATE story_tasks SET status = 'failed', impl_summary = ?, updated_at = datetime('now') WHERE id = ?")
       .run((result.error ?? result.result ?? "").slice(0, 8000), taskId);
     log(storyId, "execution_error",
       `Task #${task.seq} failed: ${result.error ?? "agent reported error"}`,
@@ -641,20 +737,14 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
   }
   const projectPath = ws.path;
 
-  // Build QA prompt — same project context, but instructions focused on verification
-  const priorTasks = db.prepare(
-    `SELECT seq, title, role, design_output, impl_summary
-     FROM story_tasks
-     WHERE story_id = ? AND status = 'done' AND role != 'qa'
-     ORDER BY seq ASC`
-  ).all(storyId) as unknown as PriorTaskContext[];
-
+  // Build QA prompt — what was built comes from the story snapshot (working
+  // memory) inside buildTaskPromptBlocks; instructions focus on verification.
   const blocks = buildTaskPromptBlocks({
     storyId,
     taskTitle: "QA verification",
     taskDescription:
       `Verify the story against its acceptance criteria.\n\n` +
-      `1. Read what the dev agents changed (see prior task summaries below).\n` +
+      `1. Read what the dev agents changed (see the Story Snapshot above for what's done).\n` +
       `2. Run the project's test suite if one exists (npm test / pytest / etc).\n` +
       `3. Inspect the changed files for obvious issues (type errors, missing handlers, broken imports).\n` +
       `4. Manually trace one happy-path and one edge-case through the new code.\n\n` +
@@ -666,8 +756,6 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
       `Use Read, Bash (for tests), and Grep tools. Do not modify implementation files. ` +
       `Be skeptical but pragmatic.`,
     agentRole: "qa",
-    phase: "implement",
-    priorTasks,
   });
 
   const userPrompt = [blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
@@ -694,6 +782,7 @@ export async function* executeQA(storyId: string, opts?: RunOptions): AsyncGener
     permissionMode: config.permission_mode,
     cliPath: config.cli_path,
     timeoutMs: config.timeout_minutes * 60 * 1000,
+    maxTurns: config.max_turns,
     signal: opts?.signal,
   }, resultRef);
 
@@ -781,7 +870,7 @@ export async function* executePipeline(storyId: string, opts?: RunOptions): Asyn
     }
     if (taskFailed) {
       if (task.role === "qa") {
-        db.prepare("UPDATE story_tasks SET status = 'failed', phase = 'failed', updated_at = datetime('now') WHERE id = ?").run(task.id);
+        db.prepare("UPDATE story_tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?").run(task.id);
       }
       log(storyId, "execution_error",
         `Pipeline halted at task #${task.seq}: ${task.title} — fix the issue and re-run`,
@@ -792,7 +881,7 @@ export async function* executePipeline(storyId: string, opts?: RunOptions): Asyn
     }
     // QA path: executeQA only updates story; we must mark the qa task done here
     if (task.role === "qa") {
-      db.prepare("UPDATE story_tasks SET status = 'done', phase = 'done', updated_at = datetime('now') WHERE id = ?").run(task.id);
+      db.prepare("UPDATE story_tasks SET status = 'done', updated_at = datetime('now') WHERE id = ?").run(task.id);
     }
   }
 
@@ -805,6 +894,113 @@ export async function* executePipeline(storyId: string, opts?: RunOptions): Asyn
   }
   log(storyId, "execution_complete", "✓ Pipeline complete", "system");
   yield { type: "done", content: "Pipeline complete" };
+}
+
+/**
+ * Design phase — the agent drafts an implementation plan (read-only), the task
+ * breakdown is created, and the story parks at `design_review` awaiting a human.
+ * This is the human-in-the-loop gate that replaces per-command CLI approval:
+ * the human reviews the PLAN once, not every shell command.
+ */
+export async function* executeDesign(storyId: string, opts?: RunOptions): AsyncGenerator<ExecutionEvent> {
+  const story = getStory(storyId);
+  if (!story) { yield { type: "error", content: "Story not found" }; return; }
+  if (!getProjectLocalPath(story.project_id)) {
+    log(storyId, "execution_error", "Design failed: project has no local path", "system", "error");
+    yield { type: "error", content: "Project has no local path" };
+    return;
+  }
+
+  log(storyId, "execution_start", "Design phase — drafting an implementation plan for review…", "system");
+  yield { type: "progress", content: "Drafting design…" };
+
+  const config = getAgentRuntimeConfig();
+  let designText: string | null = null;
+  let plan: TaskPlan | null = null;
+
+  // Try to have a tech-lead agent write a prose design AND a task graph by
+  // exploring the repo (CONTEXT.md §8).
+  const match = config.enabled ? findIdleAgentWithFallback("techlead") : null;
+  const agent = match
+    ? db.prepare("SELECT id, name, role, system_prompt, model FROM agents WHERE id = ?").get(match.agent.id) as
+        { id: string; name: string; role: string | null; system_prompt: string | null; model: string | null } | undefined
+    : undefined;
+
+  if (agent) {
+    const ws = await resolveStoryWorkspace(storyId);
+    if (ws.path) {
+      // Language + format come from the shared design guide so every agent's
+      // design output is structured, readable, and in the story's language.
+      const ctx = getStoryContext(storyId);
+      const storyText = `${story.title} ${ctx?.description ?? ""} ${ctx?.acceptance_criteria ?? ""}`;
+      const blocks = buildTaskPromptBlocks({
+        storyId,
+        taskTitle: "Design / implementation plan",
+        taskDescription: buildDesignPrompt({ storyText }),
+        agentSystemPrompt: agent.system_prompt ??
+          "You are a tech lead. Produce a clear, concise implementation plan. Do not write code in this phase.",
+        agentRole: "techlead",
+        instructions: "design",
+      });
+      const userPrompt = [blocks.contextBlock, blocks.storyBlock].filter(Boolean).join("\n\n");
+      log(storyId, "task_start", `▶ Design → spawning **${agent.name}** · ${config.model} · cwd: ${ws.path}`, "system");
+
+      const beforeHook = await runBeforeHook(storyId, ws.path);
+      if (beforeHook.ok) {
+        const resultRef: { current: RunResult | null } = { current: null };
+        yield* activeClaudeRunner({
+          prompt: userPrompt,
+          systemPrompt: blocks.systemBlock,
+          cwd: ws.path,
+          model: agent.model ?? config.model,
+          permissionMode: config.permission_mode,
+          cliPath: config.cli_path,
+          timeoutMs: config.timeout_minutes * 60 * 1000,
+          maxTurns: config.max_turns,
+          signal: opts?.signal,
+        }, resultRef);
+        await runAfterHook(storyId, ws.path);
+        const result = resultRef.current;
+        if (result) {
+          recordAgentRun({ storyId, taskId: null, agentId: agent.id, runType: "design", promptText: userPrompt, result });
+          if (result.ok && result.result?.trim()) {
+            plan = parseTaskPlan(result.result);
+            // Store the prose design without the machine-readable task block.
+            designText = stripTaskPlanJson(result.result).slice(0, 16000);
+          }
+        }
+      }
+    }
+  }
+
+  // Create the task breakdown: from the agent's task graph if we parsed one,
+  // else the heuristic planner (offline / CLI-less fallback).
+  if (listStoryTasks(storyId).length === 0) {
+    if (plan && plan.tasks.length > 0) {
+      log(storyId, "execution_start", `Tech-lead agent planned ${plan.tasks.length} task(s)`, "system", "debug");
+      createTasksFromPlan(story, plan);
+    } else {
+      createPipelineTasks(story);
+    }
+  }
+
+  // Fallback when no agent / runtime disabled: synthesize a plan from the tasks.
+  if (!designText) {
+    const tasks = listStoryTasks(storyId);
+    designText =
+      "## Implementation Plan\n\n" +
+      (tasks.length
+        ? tasks.map((t) => `${t.seq}. **${t.title}** — _${t.role}_`).join("\n")
+        : "_(no tasks inferred)_") +
+      "\n\n_Review the breakdown and approve to start implementation._";
+  }
+
+  db.prepare("UPDATE stories SET design = ?, status = 'design_review', updated_at = datetime('now') WHERE id = ?")
+    .run(designText, storyId);
+  log(storyId, "status_change",
+    "Status changed to **Design Review** — review the plan and approve to start implementation", "system");
+  log(storyId, "design", "Design ready for review", "agent");
+  yield { type: "progress", content: "Design ready for review" };
 }
 
 export async function* executeStory(storyId: string, opts?: RunOptions): AsyncGenerator<ExecutionEvent> {
@@ -821,6 +1017,15 @@ export async function* executeStory(storyId: string, opts?: RunOptions): AsyncGe
       "system", "warn"
     );
     yield { type: "error", content: `Cannot execute story in status "${story.status}" — move it to In Progress first` };
+    return;
+  }
+
+  // Design-review gate: first pass drafts a design and parks at design_review.
+  // After a human approves (design_review → in_progress), story.design is set
+  // and we fall through to implementation.
+  const cfg = getAgentRuntimeConfig();
+  if (cfg.require_design_review && !story.design) {
+    yield* executeDesign(storyId, opts);
     return;
   }
 

@@ -88,3 +88,27 @@ export function buildSprintBranchName(sprintName: string): string {
   return `sprint/${slugify(sprintName)}`;
 }
 
+/** Current HEAD commit of a worktree, or null if it can't be read. */
+export function headRef(cwd: string): string | null {
+  try {
+    return execSync(`git -C "${cwd}" rev-parse HEAD`, { encoding: "utf8", timeout: 10_000 }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Files changed in the working tree relative to `sinceRef` (a commit captured
+ * before a task ran). Includes both committed and uncommitted changes since
+ * then, so it captures what a task touched regardless of whether it committed.
+ */
+export function changedFilesSince(cwd: string, sinceRef: string | null): string[] {
+  try {
+    const ref = sinceRef ? `"${sinceRef}"` : "HEAD";
+    const out = execSync(`git -C "${cwd}" diff --name-only ${ref}`, { encoding: "utf8", timeout: 10_000 }).trim();
+    return out ? out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+

@@ -21,6 +21,8 @@ export interface RunOptions {
   model?: string;
   cliPath?: string;
   timeoutMs?: number;
+  /** Cap the agent's turn count (CLI --max-turns). 0/undefined = no cap. */
+  maxTurns?: number;
   /** When aborted, the child process is killed and the generator returns an error. */
   signal?: AbortSignal;
 }
@@ -78,6 +80,7 @@ export async function* runClaudeCode(
     "--permission-mode", opts.permissionMode ?? "acceptEdits",
   ];
   if (opts.model)        args.push("--model", opts.model);
+  if (opts.maxTurns && opts.maxTurns > 0) args.push("--max-turns", String(opts.maxTurns));
   if (opts.systemPrompt) args.push("--append-system-prompt", opts.systemPrompt);
 
   let proc;

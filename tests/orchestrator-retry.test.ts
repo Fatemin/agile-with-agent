@@ -40,6 +40,7 @@ test("orchestrator retries a transient failure and the story still reaches human
     stall_timeout_ms: 0,
     max_retry_backoff_ms: 300, // keep the retry backoff tiny so the test is quick
     timeout_minutes: 1,
+    require_design_review: false,
   }));
 
   const projectId = nanoid();

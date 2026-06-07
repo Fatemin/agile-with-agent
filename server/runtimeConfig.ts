@@ -14,12 +14,19 @@ export interface AgentRuntimeConfig {
   workspace_root: string;           // per-story workspaces under here (§5.3.3)
   max_retry_backoff_ms: number;     // retry cap (§5.3.5)
   stall_timeout_ms: number;         // event-inactivity kill threshold (§5.3.6)
+  max_turns: number;                // cap per agent run (bounds the inner loop); 0 = no cap
+  max_attempts: number;             // orchestrator give-up after this many failed attempts
+  require_design_review: boolean;   // gate: agent designs first, human approves, then implementation
+  context_token_budget: number;     // cap on assembled per-task context tokens (CONTEXT.md §6.3)
 }
 
 const DEFAULT_CONFIG: AgentRuntimeConfig = {
   enabled: true,
   cli_path: process.platform === "win32" ? "claude.cmd" : "claude",
-  permission_mode: "acceptEdits",
+  // bypassPermissions: agents run headless in an isolated worktree, so there is
+  // no human at the CLI to answer per-command approval prompts. Human control is
+  // applied at the application level instead (the design-review gate below).
+  permission_mode: "bypassPermissions",
   model: "claude-sonnet-4-5",
   timeout_minutes: 15,
   wip_limit: 3,
@@ -27,6 +34,10 @@ const DEFAULT_CONFIG: AgentRuntimeConfig = {
   workspace_root: defaultWorkspaceRoot(),
   max_retry_backoff_ms: 5 * 60_000,
   stall_timeout_ms: 5 * 60_000,
+  max_turns: 50,
+  max_attempts: 3,
+  require_design_review: true,
+  context_token_budget: 8000,
 };
 
 export function getAgentRuntimeConfig(): AgentRuntimeConfig {

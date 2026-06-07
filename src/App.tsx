@@ -9,8 +9,19 @@ import { ProjectsPage } from "./pages/Projects";
 import { ProjectViewPage } from "./pages/ProjectView";
 import { SettingsPage } from "./pages/Settings";
 
+// Live-updating by default: poll every few seconds and refetch when the tab
+// regains focus, so board/story/activity changes (e.g. an agent working a story)
+// show up without a manual refresh. Background tabs pause polling to save work.
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 10_000 } },
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      staleTime: 3_000,
+      refetchInterval: 4_000,
+      refetchIntervalInBackground: false,
+      refetchOnWindowFocus: true,
+    },
+  },
 });
 
 export default function App() {

@@ -7,7 +7,7 @@
     "dev:client": "vite",
     "dev:server": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node --watch server/index.ts",
     "build": "vite build",
-    "test": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node --test tests/execution-chain.test.ts tests/orchestrator-flow.test.ts tests/orchestrator-retry.test.ts tests/orchestrator-recovery.test.ts",
+    "test": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node --test tests/execution-chain.test.ts tests/orchestrator-flow.test.ts tests/orchestrator-retry.test.ts tests/orchestrator-recovery.test.ts tests/orchestrator-giveup.test.ts",
     "flow": "cross-env NODE_OPTIONS=\"--experimental-sqlite --import tsx/esm\" node tests/run-happy-flow.ts",
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "lint:client": "tsc --noEmit",

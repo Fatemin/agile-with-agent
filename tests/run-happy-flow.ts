@@ -58,6 +58,16 @@ db.prepare("UPDATE stories SET status = 'in_progress' WHERE id = ?").run(storyId
 const events: Array<{ type: string; content?: string }> = [];
 for await (const e of executeStory(storyId)) events.push(e);
 
+// Design gate: first pass parks at design_review. Simulate a human approving.
+const afterPass1 = db.prepare("SELECT status, design FROM stories WHERE id = ?").get(storyId) as
+  { status: string; design: string | null };
+if (afterPass1.status === "design_review") {
+  console.log(`\n--- design produced (awaiting review) ---\n${(afterPass1.design || "").slice(0, 400)}`);
+  console.log("\n[human approves design → in_progress]");
+  db.prepare("UPDATE stories SET status = 'in_progress' WHERE id = ?").run(storyId);
+  for await (const e of executeStory(storyId)) events.push(e); // pass 2: implementation
+}
+
 // --- report ---
 const story = db.prepare("SELECT status, qa_result, branch_name FROM stories WHERE id = ?").get(storyId) as
   { status: string; qa_result: string | null; branch_name: string | null };

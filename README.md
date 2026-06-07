@@ -28,6 +28,8 @@ and architecture they need.
                             ▼
                    executeStory(storyId)
                             │
+        0. Design gate (on by default): agent drafts a plan →
+           status = design_review → wait for human approval (executeDesign)
         1. Tech-Lead plan → story_tasks  (executeTechLeadPlan)
         2. ensureWorkspace → git worktree under workspace_root
         3. For each task: spawn `claude` CLI in the worktree (executeTask)
@@ -61,13 +63,15 @@ Stories use a Linear-style flow (the DB migrates older sprint-style states forwa
 |--------|---------|
 | `backlog` | Not yet scheduled |
 | `todo` | Scheduled; eligible for the orchestrator to pick up |
+| `design_review` | Agent drafted an implementation plan; **awaiting human approval** before coding (gate; on by default) |
 | `in_progress` | An agent pipeline is running (or has been dispatched) |
 | `human_review` | Agent work + QA done; awaiting a human to acknowledge and mark Done |
 | `done` | Terminal — complete |
 | `cancelled` | Terminal — abandoned |
 
-`todo` and `in_progress` are the **active** states the orchestrator acts on; `done` and `cancelled`
-are **terminal**.
+`todo` and `in_progress` are the **active** states the orchestrator acts on; `design_review` and
+`human_review` are **human gates** (the orchestrator parks and waits); `done` and `cancelled` are
+**terminal**. The design gate can be turned off with `require_design_review: false`.
 
 Tasks (`story_tasks`) are Jira-style sub-units with their own `status`
 (`todo`/`in_progress`/`in_review`/`done`/`blocked`/`failed`) and a target `role`
@@ -137,6 +141,7 @@ server/
   execution.ts      executeStory / TechLead plan / per-task / QA pipeline
   claudeRunner.ts   Spawns the Claude Code CLI and parses its stream-json output
   contextBuilder.ts Context-section selection + prompt assembly
+  designGuide.ts    The design "skill": the structured, language-matched format every design run must follow
   workspace.ts      Per-story git worktrees under workspace_root
   workflow.ts       WORKFLOW.md loader (YAML front matter + hooks) with hot reload
   hooks.ts          Runs workspace lifecycle hook scripts
@@ -213,13 +218,16 @@ Runtime behavior is stored in the `settings` table (editable from the **Settings
 | `enabled` | `true` | Master switch; when off, execution halts instead of spawning agents |
 | `cli_path` | `claude` / `claude.cmd` | Path to the Claude Code CLI |
 | `model` | `claude-sonnet-4-5` | Model passed to the CLI |
-| `permission_mode` | `acceptEdits` | CLI permission mode (`default`/`acceptEdits`/`bypassPermissions`/`plan`) |
+| `permission_mode` | `bypassPermissions` | CLI permission mode (`default`/`acceptEdits`/`bypassPermissions`/`plan`). Headless runs have no human at the CLI, so the default lets agents act freely inside the isolated worktree; human control lives at the design/review gates |
+| `require_design_review` | `true` | Agent drafts a design first and parks at `design_review` for human approval before implementation |
 | `timeout_minutes` | `15` | Per-agent run timeout |
 | `wip_limit` | `3` | Max concurrent agent runs |
 | `poll_interval_ms` | `30000` | Orchestrator tick interval |
 | `workspace_root` | OS temp dir `/agile_workspaces` | Where per-story worktrees are created |
 | `stall_timeout_ms` | `300000` | Kill a run after this long with no agent events |
 | `max_retry_backoff_ms` | `300000` | Cap on exponential retry backoff |
+| `max_turns` | `50` | Cap on agent turns per run (CLI `--max-turns`); bounds a single run's cost |
+| `max_attempts` | `3` | Orchestrator gives up after this many failed attempts and pauses the story to `manual` |
 
 Agents authenticate through the Claude Code CLI's own session; this app does not store an Anthropic API
 key. Additional environment variables can be stored under the `env_vars` setting (read via `getEnv`).
@@ -228,9 +236,11 @@ key. Additional environment variables can be stored under the `env_vars` setting
 
 ## Known limitations
 
-- **Persistently failing work loops in `auto` mode.** A story whose task or QA keeps failing stays
-  `in_progress`, so the orchestrator keeps retrying it (with backoff). There is no max-attempts
-  give-up / move-to-blocked policy yet.
+- **`bypassPermissions` is the default.** Headless runs have no human at the CLI to answer
+  per-command prompts, so agents run with full permissions inside their isolated worktree — they can
+  execute arbitrary shell commands. Human control is applied at the design/review gates, not per
+  command. The worktree is a real checkout on your machine, not a sandbox; switch to `acceptEdits` if
+  you want to keep the file-edit-only rail (at the cost of agents stalling on `git`/shell steps).
 - **Test coverage is meaningful but not exhaustive.** The suite covers the execution chain, the
   branch/worktree fix, the QA gate, multi-task pipelines, orchestrator dispatch/retry, and restart
   recovery (see [Testing](#testing)); most HTTP routes and the React client are still untested.
@@ -249,4 +259,5 @@ key. Additional environment variables can be stored under the `env_vars` setting
 - [PRD.md](PRD.md) — product requirements and feature list
 - [DESIGN.md](DESIGN.md) — UI design system (color tokens, typography, layout patterns)
 - [specs.md](specs.md) — the Symphony orchestration spec the runtime implements
+- [CONTEXT.md](CONTEXT.md) — context & state management spec (State/Artifact-driven context; proposal)
 - [BACKLOG.md](BACKLOG.md) — fix backlog (archived §1–7 resolved; current ACTIVE items at top)

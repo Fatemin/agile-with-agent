@@ -60,10 +60,19 @@ export function makeFakeRunner(opts?: { qaVerdict?: "PASS" | "FAIL"; failImpl?: 
   const qaVerdict = opts?.qaVerdict ?? "PASS";
 
   const fake: RunnerFn = async function* (runOpts, resultRef) {
-    const isQA = (runOpts.prompt + (runOpts.systemPrompt ?? "")).includes("QA_RESULT");
+    const text = runOpts.prompt + (runOpts.systemPrompt ?? "");
+    const isDesign = text.includes("Design Phase");
+    const isQA = text.includes("QA_RESULT");
     yield { type: "progress", content: "fake agent initialized" };
 
     let resultText: string;
+    if (isDesign) {
+      // Design phase: produce a plan, do NOT touch files.
+      resultText = "## Implementation Plan\n\n- Update the relevant module\n- Add a test\n\nApproach: minimal change, follow conventions.";
+      yield { type: "text", content: resultText };
+      resultRef.current = makeResult(true, resultText);
+      return;
+    }
     if (isQA) {
       resultText = qaVerdict === "PASS"
         ? "Verified all acceptance criteria.\nQA_RESULT: PASS"
@@ -96,7 +105,7 @@ export function makeFakeRunner(opts?: { qaVerdict?: "PASS" | "FAIL"; failImpl?: 
  * fail (returning an error result). Used to exercise the orchestrator's retry
  * path: the run fails, gets retried, and eventually succeeds. QA always passes.
  */
-export function makeFlakyRunner(opts: { failImplFirst: number }): RunnerFn {
+export function makeFlakyRunner(opts: { failImplFirst: number; errorText?: string }): RunnerFn {
   let implCalls = 0;
   const succeed = makeFakeRunner({ qaVerdict: "PASS" });
   const flaky: RunnerFn = async function* (runOpts, resultRef) {
@@ -104,7 +113,7 @@ export function makeFlakyRunner(opts: { failImplFirst: number }): RunnerFn {
     if (!isQA) {
       implCalls += 1;
       if (implCalls <= opts.failImplFirst) {
-        const msg = `flaky impl failure (attempt ${implCalls})`;
+        const msg = opts.errorText ?? `flaky impl failure (attempt ${implCalls})`;
         resultRef.current = makeResult(false, msg);
         yield { type: "error", content: msg };
         return;

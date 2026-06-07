@@ -5,6 +5,7 @@ export type Priority = "low" | "medium" | "high" | "urgent";
 export type StoryStatus =
   | "backlog"
   | "todo"
+  | "design_review"
   | "in_progress"
   | "human_review"
   | "done"
@@ -99,12 +100,17 @@ export interface Story {
   parent_story_id: string | null;
   pipeline_mode: number;
   mode: StoryMode;
+  design: string | null;
   // Joined fields
   agent_name?: string | null;
   agent_provider?: string | null;
   epic_title?: string | null;
   epic_color?: string | null;
   sprint_name?: string | null;
+  // Aggregates (from the stories list/get query)
+  task_total?: number;
+  task_done?: number;
+  defect_count?: number;
 }
 
 export type AgentRole =
@@ -125,11 +131,6 @@ export interface Agent {
   story_count?: number;
   active_count?: number;
 }
-
-// Legacy phase — kept for backward compat with the DB column, but UI uses TaskStatus
-export type TaskPhase =
-  | "pending" | "designing" | "design_done"
-  | "implementing" | "done" | "failed";
 
 export type TaskStatus = "todo" | "in_progress" | "in_review" | "done" | "blocked" | "failed";
 
@@ -154,8 +155,6 @@ export interface StoryTask {
   scope_paths: string;   // JSON string — parse with JSON.parse
   depends_on: string;    // JSON string — parse with JSON.parse
   status: TaskStatus;
-  phase: TaskPhase;      // legacy
-  design_output: string | null;
   impl_summary: string | null;
   // Defect-specific
   severity: DefectSeverity | null;

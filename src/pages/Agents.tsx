@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { STORY_STATUS } from "@/lib/storyStatus";
 import type { Agent, AgentRole, AgentRun, AgentStatus, AgentStory, Provider, StoryStatus, StoryType } from "@/types";
 
 dayjs.extend(relativeTime);
@@ -261,14 +262,9 @@ const STATUS_LABEL: Record<AgentStatus, string> = {
   in_progress: "In Progress",
 };
 
-const STORY_STATUS_META: Record<StoryStatus, { label: string; cls: string }> = {
-  backlog:      { label: "Backlog",      cls: "bg-surface-tertiary text-content-tertiary" },
-  todo:         { label: "Todo",         cls: "bg-surface-tertiary text-content-secondary" },
-  in_progress:  { label: "In Progress",  cls: "bg-cyan-50 text-cyan-700 border border-cyan-200" },
-  human_review: { label: "Human Review", cls: "bg-amber-50 text-amber-700 border border-amber-200" },
-  done:         { label: "Done",         cls: "bg-green-50 text-green-700 border border-green-200" },
-  cancelled:    { label: "Cancelled",    cls: "bg-red-50 text-red-700 border border-red-200" },
-};
+const STORY_STATUS_META = Object.fromEntries(
+  (Object.keys(STORY_STATUS) as StoryStatus[]).map((s) => [s, { label: STORY_STATUS[s].label, cls: STORY_STATUS[s].badge }]),
+) as Record<StoryStatus, { label: string; cls: string }>;
 
 const TYPE_ICONS: Record<StoryType, React.ElementType> = {
   story: ListTodo, bug: Bug, task: Wrench, spike: Lightbulb,

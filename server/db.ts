@@ -175,6 +175,60 @@ db.exec(`
   );
 `);
 
+// CONTEXT.md §5.1 — per-story working memory ("snapshot"). One row per story.
+// Replaces injecting every prior task's full impl_summary into sibling-task
+// prompts (the O(tasks) prompt-growth leak). state_json holds a bounded,
+// compact view: completed[] (one line each), in_progress, blocked[], key files.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS story_snapshot (
+    story_id    TEXT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
+    goal        TEXT,
+    state_json  TEXT NOT NULL DEFAULT '{}',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
+// CONTEXT.md §5.2 — compressed, append-only decision log. A decision is
+// recorded once and referenced by its per-project seq ("#15") thereafter,
+// instead of replaying the conversation that produced it. A new decision on a
+// topic that already has an active one supersedes it (one current answer/topic).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS decisions (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    story_id      TEXT REFERENCES stories(id) ON DELETE SET NULL,
+    seq           INTEGER NOT NULL,
+    topic         TEXT NOT NULL,
+    decision      TEXT NOT NULL,
+    rationale     TEXT,
+    status        TEXT NOT NULL DEFAULT 'active',
+    supersedes_id TEXT REFERENCES decisions(id) ON DELETE SET NULL,
+    created_by    TEXT NOT NULL DEFAULT 'agent',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id, status);
+  CREATE INDEX IF NOT EXISTS idx_decisions_story   ON decisions(story_id);
+`);
+
+// CONTEXT.md §5.3 — artifact manifest. The artifact's *content* lives in the
+// git worktree; this is an index (path + kind + one-line summary) so the context
+// builder can offer relevant files for a task without reading every file.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS artifacts (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    story_id    TEXT REFERENCES stories(id) ON DELETE SET NULL,
+    task_id     TEXT REFERENCES story_tasks(id) ON DELETE SET NULL,
+    path        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'code',
+    summary     TEXT,
+    status      TEXT NOT NULL DEFAULT 'active',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(story_id, path)
+  );
+  CREATE INDEX IF NOT EXISTS idx_artifacts_story ON artifacts(story_id, status);
+`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS story_activities (
     id TEXT PRIMARY KEY,
@@ -229,6 +283,8 @@ const migrations = [
   "ALTER TABLE stories ADD COLUMN pipeline_mode INTEGER NOT NULL DEFAULT 0",
   // Workflow mode
   "ALTER TABLE stories ADD COLUMN mode TEXT NOT NULL DEFAULT 'manual'",
+  // Design-review gate: agent's implementation plan, awaiting human approval
+  "ALTER TABLE stories ADD COLUMN design TEXT",
   // Sprint branch tracking
   "ALTER TABLE sprints ADD COLUMN branch_name TEXT",
   // Activity log level

@@ -22,6 +22,10 @@ import { removeWorkspace } from "./workspace.js";
 const ACTIVE_STATES = new Set(["todo", "in_progress"]);
 const TERMINAL_STATES = new Set(["done", "cancelled"]);
 
+// Errors that retrying cannot fix (quota/auth/permission/config). Retrying these
+// just burns tokens, so the orchestrator gives up immediately instead of looping.
+const NON_RETRYABLE = /session limit|usage limit|rate limit|quota|hit your .*limit|authentication|unauthorized|invalid api key|not logged in|insufficient.*credit|permission (?:was |is )?denied|requires? your approval/i;
+
 interface RunningEntry {
   storyId: string;
   identifier: string;            // story key, for logs
@@ -291,20 +295,50 @@ class Orchestrator {
         return;
       }
 
-      // Still active — schedule continuation or retry
+      // Still active — decide retry vs give up.
+      const config = getAgentRuntimeConfig();
       if (hadError) {
-        const config = getAgentRuntimeConfig();
+        // 1. Non-retryable errors (quota/auth/permission) → stop now, don't burn tokens.
+        if (errorMsg && NON_RETRYABLE.test(errorMsg)) {
+          this.giveUp(storyId, identifier, `non-retryable error: ${errorMsg}`);
+          return;
+        }
+        // 2. Out of attempts → stop and hand back to a human.
+        if (attempt >= config.max_attempts) {
+          this.giveUp(storyId, identifier, `${attempt} failed attempts (last: ${errorMsg ?? "unknown"})`);
+          return;
+        }
         const delay = Math.min(10_000 * 2 ** (attempt - 1), config.max_retry_backoff_ms);
         log(storyId, "orchestrator",
-          `Run failed (attempt ${attempt}): ${errorMsg ?? "unknown"} — retrying in ${Math.round(delay/1000)}s`,
+          `Run failed (attempt ${attempt}/${config.max_attempts}): ${errorMsg ?? "unknown"} — retrying in ${Math.round(delay/1000)}s`,
           "system", "warn"
         );
         this.scheduleRetry(storyId, identifier, attempt + 1, delay, errorMsg);
+      } else if (attempt >= config.max_attempts) {
+        // Clean exit but still active after max attempts → no forward progress; give up.
+        this.giveUp(storyId, identifier, `no completion after ${attempt} attempts`);
       } else {
         // Clean exit + still active → schedule short continuation retry (Symphony §7.1 nuance)
         this.scheduleRetry(storyId, identifier, attempt + 1, 1_000, null);
       }
     })();
+  }
+
+  /**
+   * Stop auto-executing a story that can't make progress. Flips it to `manual`
+   * (persisted, so neither the poll loop nor restart recovery re-dispatches it —
+   * both only pick `mode='auto'`) and leaves a clear log for the human.
+   */
+  private giveUp(storyId: string, identifier: string, reason: string): void {
+    const existing = this.retries.get(storyId);
+    if (existing) { clearTimeout(existing.timer); this.retries.delete(storyId); }
+    db.prepare("UPDATE stories SET mode = 'manual', updated_at = datetime('now') WHERE id = ?").run(storyId);
+    log(storyId, "orchestrator",
+      `⛔ Auto-execution paused after ${reason}. Switched to **manual** — fix the issue and re-run manually.`,
+      "system", "error"
+    );
+    logSystem("orchestrator", `${identifier}: gave up — ${reason}`, "warn");
+    this.claimed.delete(storyId);
   }
 
   // ── Retry queue (Symphony §8.4) ─────────────────────────────────────────────
